@@ -261,6 +261,29 @@ impl super::App {
             ui.separator();
 
             if let Some(ds) = self.devices.get_mut(&serial_owned) {
+                ui.label("Tag:");
+                ui.add_sized(
+                    [100.0, 20.0],
+                    egui::TextEdit::singleline(&mut ds.logcat_tag_filter)
+                        .hint_text("ActivityManager"),
+                )
+                .on_hover_text("Case-insensitive tag filter");
+            }
+
+            ui.separator();
+
+            if let Some(ds) = self.devices.get_mut(&serial_owned) {
+                ui.label("PID:");
+                ui.add_sized(
+                    [70.0, 20.0],
+                    egui::TextEdit::singleline(&mut ds.logcat_pid_filter).hint_text("1234"),
+                )
+                .on_hover_text("Show only lines from this process ID");
+            }
+
+            ui.separator();
+
+            if let Some(ds) = self.devices.get_mut(&serial_owned) {
                 ui.checkbox(&mut ds.logcat_ui.auto_scroll, "Auto-scroll");
             }
 
@@ -284,12 +307,14 @@ impl super::App {
             let total = ds.logcat_lines.len();
             (
                 ds.logcat_filter.to_lowercase(),
+                ds.logcat_tag_filter.to_lowercase(),
+                ds.logcat_pid_filter.trim().to_string(),
                 ds.level_filter,
                 total,
                 ds.logcat_ui.auto_scroll,
             )
         });
-        let Some((filter_lower, level, total, auto_scroll)) = meta else {
+        let Some((filter_lower, tag_filter, pid_filter, level, total, auto_scroll)) = meta else {
             return;
         };
 
@@ -309,6 +334,12 @@ impl super::App {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                     for line in page_lines {
                         if !device::line_passes_level(line, level) {
+                            continue;
+                        }
+                        if !device::line_passes_tag(line, &tag_filter) {
+                            continue;
+                        }
+                        if !device::line_passes_pid(line, &pid_filter) {
                             continue;
                         }
                         if !filter_lower.is_empty() && !line.to_lowercase().contains(&filter_lower)
@@ -389,6 +420,29 @@ impl super::App {
             ui.separator();
 
             if let Some(ds) = self.devices.get_mut(&serial_owned) {
+                ui.label("Tag:");
+                ui.add_sized(
+                    [100.0, 20.0],
+                    egui::TextEdit::singleline(&mut ds.logcat_tag_filter)
+                        .hint_text("ActivityManager"),
+                )
+                .on_hover_text("Case-insensitive tag filter");
+            }
+
+            ui.separator();
+
+            if let Some(ds) = self.devices.get_mut(&serial_owned) {
+                ui.label("PID:");
+                ui.add_sized(
+                    [70.0, 20.0],
+                    egui::TextEdit::singleline(&mut ds.logcat_pid_filter).hint_text("1234"),
+                )
+                .on_hover_text("Show only lines from this process ID");
+            }
+
+            ui.separator();
+
+            if let Some(ds) = self.devices.get_mut(&serial_owned) {
                 ui.checkbox(&mut ds.logcat_ui.auto_scroll, "Auto-scroll");
             }
 
@@ -409,12 +463,17 @@ impl super::App {
 
         // Read total + filter + auto_scroll, then drop borrow so paging bar can borrow &mut self.
         let snap_meta = self.devices.get(serial).and_then(|ds| {
-            ds.log_buffers
-                .get(&source)
-                .map(|lines| (lines.len(), ds.logcat_filter.to_lowercase()))
+            ds.log_buffers.get(&source).map(|lines| {
+                (
+                    lines.len(),
+                    ds.logcat_filter.to_lowercase(),
+                    ds.logcat_tag_filter.to_lowercase(),
+                    ds.logcat_pid_filter.trim().to_string(),
+                )
+            })
         });
 
-        let Some((total, filter_lower)) = snap_meta else {
+        let Some((total, filter_lower, tag_filter, pid_filter)) = snap_meta else {
             ui.centered_and_justified(|ui| {
                 ui.label("Click a log source to fetch, or press Refresh.");
             });
@@ -436,6 +495,12 @@ impl super::App {
                     .show(ui, |ui| {
                         ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                         for line in page_lines.iter().rev() {
+                            if !device::line_passes_tag(line, &tag_filter) {
+                                continue;
+                            }
+                            if !device::line_passes_pid(line, &pid_filter) {
+                                continue;
+                            }
                             if !filter_lower.is_empty()
                                 && !line.to_lowercase().contains(&filter_lower)
                             {

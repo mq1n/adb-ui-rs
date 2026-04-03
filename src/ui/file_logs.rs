@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
-use super::helpers::{export_single_file, file_log_line_color, format_size};
+use super::helpers::{export_single_file, file_log_line_color, format_size, open_in_file_manager};
 use super::{AppLogLevel, FILE_WATCH_INTERVAL};
 use crate::adb;
 use crate::device::FileSortBy;
@@ -485,14 +485,11 @@ impl super::App {
             );
         }
 
-        // Open the directory.
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            let _ = std::process::Command::new("explorer.exe")
-                .arg(dir.to_string_lossy().replace('/', "\\"))
-                .creation_flags(0x0800_0000)
-                .spawn();
+        if let Err(error) = open_in_file_manager(&dir) {
+            self.log(
+                AppLogLevel::Warn,
+                format!("Export completed, but the folder did not open automatically: {error}"),
+            );
         }
     }
 }

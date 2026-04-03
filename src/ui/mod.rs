@@ -2,6 +2,7 @@ mod app_log;
 mod debug;
 mod deploy;
 mod device_tab;
+mod device_tools;
 mod explorer;
 mod file_logs;
 mod helpers;
@@ -93,6 +94,14 @@ pub struct App {
     pub wifi_connect_addr: String,
     /// WSA port input.
     pub wsa_port: String,
+    /// Wireless debugging pairing address input.
+    pub pair_address_input: String,
+    /// Wireless debugging pairing code input.
+    pub pair_code_input: String,
+    /// Fastboot serial input.
+    pub fastboot_serial_input: String,
+    /// Fastboot partition input.
+    pub fastboot_partition_input: String,
     /// Devices the user explicitly closed (won't auto-reappear).
     pub hidden_devices: std::collections::HashSet<String>,
     /// Cached AVD list for emulator management.
@@ -164,6 +173,10 @@ impl App {
             recording_procs: HashMap::new(),
             wifi_connect_addr: String::new(),
             wsa_port: "58526".into(),
+            pair_address_input: String::new(),
+            pair_code_input: String::new(),
+            fastboot_serial_input: String::new(),
+            fastboot_partition_input: "boot".into(),
             hidden_devices: std::collections::HashSet::new(),
             available_avds: Vec::new(),
             avds_loading: false,
@@ -407,6 +420,9 @@ impl App {
                     if let Some(ds) = self.devices.get_mut(&serial) {
                         ds.push_action_log(format!("{} {msg}", now_str()));
                     }
+                }
+                AdbMsg::ResolvedLaunchActivity(serial, component) => {
+                    self.persist_resolved_activity(&serial, &component);
                 }
                 AdbMsg::ExplorerListing(serial, gen, path, entries) => {
                     let entry_count = entries.len();

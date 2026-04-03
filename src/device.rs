@@ -1,3 +1,6 @@
+// This module centralizes per-device UI state, including fields wired in gradually across tabs.
+#![allow(dead_code)]
+
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -310,6 +313,73 @@ pub struct DeployState {
     pub crash_log: String,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PackageToolsState {
+    pub package_name: String,
+    pub package_filter: String,
+    pub permission_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionToolsState {
+    pub tcpip_port: String,
+    pub forward_local: String,
+    pub forward_remote: String,
+    pub reverse_local: String,
+    pub reverse_remote: String,
+}
+
+impl Default for ConnectionToolsState {
+    fn default() -> Self {
+        Self {
+            tcpip_port: "5555".to_string(),
+            forward_local: "tcp:8080".to_string(),
+            forward_remote: "tcp:8080".to_string(),
+            reverse_local: "tcp:8081".to_string(),
+            reverse_remote: "tcp:8081".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandToolsState {
+    pub instrument_runner: String,
+    pub am_command: String,
+    pub pm_command: String,
+    pub cmd_service: String,
+    pub cmd_args: String,
+    pub wm_size: String,
+    pub wm_density: String,
+    pub settings_namespace: String,
+    pub settings_key: String,
+    pub settings_value: String,
+    pub sqlite_path: String,
+    pub sqlite_query: String,
+    pub sqlite_run_as_package: String,
+    pub content_command: String,
+}
+
+impl Default for CommandToolsState {
+    fn default() -> Self {
+        Self {
+            instrument_runner: String::new(),
+            am_command: String::new(),
+            pm_command: String::new(),
+            cmd_service: String::new(),
+            cmd_args: String::new(),
+            wm_size: String::new(),
+            wm_density: String::new(),
+            settings_namespace: "global".to_string(),
+            settings_key: String::new(),
+            settings_value: String::new(),
+            sqlite_path: "databases/app.db".to_string(),
+            sqlite_query: "SELECT name FROM sqlite_master;".to_string(),
+            sqlite_run_as_package: String::new(),
+            content_command: String::new(),
+        }
+    }
+}
+
 /// State for a single connected device tab.
 pub struct DeviceState {
     pub info: DeviceInfo,
@@ -323,6 +393,10 @@ pub struct DeviceState {
     pub logcat_session: u64,
     /// Logcat text filter (case-insensitive substring).
     pub logcat_filter: String,
+    /// Optional live logcat tag filter (case-insensitive substring).
+    pub logcat_tag_filter: String,
+    /// Optional live logcat PID filter.
+    pub logcat_pid_filter: String,
     /// Log level filter: 0=All, 1=V, 2=D, 3=I, 4=W, 5=E, 6=F
     pub level_filter: usize,
     /// Pulled file logs keyed by key (e.g. "internal/client.1.log").
@@ -464,6 +538,8 @@ pub struct DeviceState {
     pub strace_pid: String,
     /// Strace: duration in seconds (input string).
     pub strace_duration: String,
+    /// Memory analysis: heap watch threshold in megabytes.
+    pub memory_watch_limit_mb: String,
     // ── Monitor tab ────────────────────────────────────────────────────
     /// Currently selected monitor category.
     pub active_monitor_category: MonitorCategory,
@@ -480,6 +556,12 @@ pub struct DeviceState {
     // ── Deploy tab ─────────────────────────────────────────────────
     /// Deploy workflow state.
     pub deploy: DeployState,
+    /// Package manager helpers and inputs.
+    pub package_tools: PackageToolsState,
+    /// Connection and forwarding helpers.
+    pub connection_tools: ConnectionToolsState,
+    /// Advanced shell-backed command helpers.
+    pub command_tools: CommandToolsState,
 }
 
 impl DeviceState {
@@ -491,6 +573,8 @@ impl DeviceState {
             logcat_status: String::new(),
             logcat_session: 0,
             logcat_filter: String::new(),
+            logcat_tag_filter: String::new(),
+            logcat_pid_filter: String::new(),
             level_filter: 0,
             file_logs: HashMap::new(),
             sorted_keys: Vec::new(),
@@ -561,6 +645,7 @@ impl DeviceState {
             simpleperf_event: "cpu-cycles".into(),
             strace_pid: String::new(),
             strace_duration: "5".into(),
+            memory_watch_limit_mb: "256".into(),
             active_monitor_category: MonitorCategory::Processes,
             monitor_outputs: HashMap::new(),
             monitor_loading: HashSet::new(),
@@ -568,6 +653,9 @@ impl DeviceState {
             monitor_ps_search: String::new(),
             monitor_kill_pid: String::new(),
             deploy: DeployState::default(),
+            package_tools: PackageToolsState::default(),
+            connection_tools: ConnectionToolsState::default(),
+            command_tools: CommandToolsState::default(),
         }
     }
 
@@ -936,6 +1024,34 @@ pub fn line_passes_level(line: &str, min_level: usize) -> bool {
     }
 
     true
+}
+
+pub fn line_passes_tag(line: &str, tag_filter: &str) -> bool {
+    let tag_filter = tag_filter.trim();
+    if tag_filter.is_empty() {
+        return true;
+    }
+
+    parse_threadtime_tag(line).is_some_and(|tag| tag.to_lowercase().contains(tag_filter))
+}
+
+pub fn line_passes_pid(line: &str, pid_filter: &str) -> bool {
+    let pid_filter = pid_filter.trim();
+    if pid_filter.is_empty() {
+        return true;
+    }
+
+    parse_threadtime_pid(line) == Some(pid_filter)
+}
+
+fn parse_threadtime_pid(line: &str) -> Option<&str> {
+    line.split_whitespace().nth(2)
+}
+
+fn parse_threadtime_tag(line: &str) -> Option<&str> {
+    line.split_whitespace()
+        .nth(5)
+        .map(|tag| tag.trim_end_matches(':'))
 }
 
 const fn next_session_id(current: u64) -> u64 {

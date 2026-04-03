@@ -14,6 +14,7 @@ impl super::App {
         ui.heading("Settings");
         ui.separator();
         self.draw_settings_fields(ui);
+        self.draw_platform_tools(ui);
         self.draw_settings_actions(ui);
         self.draw_settings_summary(ui);
     }
@@ -32,7 +33,7 @@ impl super::App {
         );
         ui.colored_label(
             egui::Color32::from_rgb(120, 120, 120),
-            "Leave empty to use monkey launcher fallback",
+            "Leave empty to auto-resolve the launchable activity",
         );
         ui.add_space(12.0);
 
@@ -63,6 +64,90 @@ impl super::App {
                 self.reset_settings_to_defaults();
             }
         });
+    }
+
+    fn draw_platform_tools(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Platform Tools").strong());
+        ui.add_space(2.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("adb devices -l").clicked() {
+                self.spawn_platform_tools_task("adb devices -l", adb::adb_devices_long);
+            }
+            if ui.button("Restart ADB Server").clicked() {
+                self.fatal_error = None;
+                self.hidden_devices.clear();
+                self.last_device_poll = 0.0;
+                self.spawn_platform_tools_task("Restart ADB server", adb::restart_adb_server);
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Pair:");
+            ui.add_sized(
+                [170.0, 20.0],
+                egui::TextEdit::singleline(&mut self.pair_address_input).hint_text("host:port"),
+            );
+            ui.add_sized(
+                [110.0, 20.0],
+                egui::TextEdit::singleline(&mut self.pair_code_input).hint_text("pairing code"),
+            );
+            if ui.button("adb pair").clicked() {
+                let addr = self.pair_address_input.trim().to_string();
+                let code = self.pair_code_input.trim().to_string();
+                if addr.is_empty() || code.is_empty() {
+                    self.log(
+                        AppLogLevel::Warn,
+                        "[platform-tools] adb pair skipped: address or pairing code is empty",
+                    );
+                } else {
+                    self.spawn_platform_tools_task("adb pair", move || adb::adb_pair(&addr, &code));
+                }
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Fastboot:");
+            ui.add_sized(
+                [150.0, 20.0],
+                egui::TextEdit::singleline(&mut self.fastboot_serial_input)
+                    .hint_text("optional serial"),
+            );
+            ui.add_sized(
+                [110.0, 20.0],
+                egui::TextEdit::singleline(&mut self.fastboot_partition_input)
+                    .hint_text("partition"),
+            );
+            if ui.button("fastboot devices").clicked() {
+                self.spawn_platform_tools_task("fastboot devices", adb::list_fastboot_devices);
+            }
+            if ui.button("Flash Image...").clicked() {
+                let partition = self.fastboot_partition_input.trim().to_string();
+                if partition.is_empty() {
+                    self.log(
+                        AppLogLevel::Warn,
+                        "[platform-tools] fastboot flash skipped: partition is empty",
+                    );
+                } else if let Some(path) = rfd::FileDialog::new()
+                    .set_title("Select image to flash with fastboot")
+                    .pick_file()
+                {
+                    let serial = self.fastboot_serial_input.trim().to_string();
+                    let image = path.display().to_string();
+                    self.spawn_platform_tools_task("fastboot flash", move || {
+                        let serial = (!serial.is_empty()).then_some(serial.as_str());
+                        adb::flash_partition(serial, &partition, &image)
+                    });
+                } else {
+                    self.log(
+                        AppLogLevel::Info,
+                        "[platform-tools] fastboot flash cancelled",
+                    );
+                }
+            }
+        });
+
+        ui.add_space(12.0);
     }
 
     fn draw_settings_summary(&self, ui: &mut egui::Ui) {
@@ -205,6 +290,38 @@ impl super::App {
         }
     }
 
+    pub(super) fn persist_resolved_activity(&mut self, serial: &str, component: &str) {
+        let component = component.trim();
+        if component.is_empty() || self.config.activity_class == component {
+            return;
+        }
+
+        self.config.activity_class = component.to_string();
+        self.activity_class_input
+            .clone_from(&self.config.activity_class);
+
+        match self.config.save() {
+            Ok(()) => {
+                self.log(
+                    AppLogLevel::Info,
+                    format!(
+                        "[{serial}] Saved resolved launch activity: {}",
+                        self.config.activity_class
+                    ),
+                );
+            }
+            Err(error) => {
+                self.log(
+                    AppLogLevel::Error,
+                    format!(
+                        "[{serial}] Failed to save resolved activity {}: {error}",
+                        self.config.activity_class
+                    ),
+                );
+            }
+        }
+    }
+
     // ─── ADB not found ──────────────────────────────────────────────────────
 
     pub(super) fn draw_adb_not_found(&mut self, ui: &mut egui::Ui, err: &str) {
@@ -219,7 +336,7 @@ impl super::App {
             ui.add_space(8.0);
             ui.label(err);
             ui.add_space(24.0);
-            ui.label("Provide the path to adb.exe:");
+            ui.label(format!("Provide the path to {}:", adb_binary_label()));
             ui.add_space(4.0);
 
             ui.horizontal(|ui| {
@@ -227,14 +344,10 @@ impl super::App {
                 ui.add_sized(
                     [max_w, 24.0],
                     egui::TextEdit::singleline(&mut self.adb_path_candidate)
-                        .hint_text("C:/Android/Sdk/platform-tools/adb.exe"),
+                        .hint_text(adb_path_hint()),
                 );
                 if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("adb executable", &["exe"])
-                        .set_title("Select adb.exe")
-                        .pick_file()
-                    {
+                    if let Some(path) = adb_file_dialog().pick_file() {
                         self.adb_path_candidate = path.display().to_string();
                     }
                 }
@@ -265,5 +378,53 @@ impl super::App {
                 );
             }
         });
+    }
+}
+
+const fn adb_binary_label() -> &'static str {
+    #[cfg(windows)]
+    {
+        "adb.exe"
+    }
+
+    #[cfg(not(windows))]
+    {
+        "adb"
+    }
+}
+
+const fn adb_path_hint() -> &'static str {
+    #[cfg(windows)]
+    {
+        "C:/Android/Sdk/platform-tools/adb.exe"
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        "/Users/yourname/Library/Android/sdk/platform-tools/adb"
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "/home/yourname/Android/Sdk/platform-tools/adb"
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    {
+        "path/to/adb"
+    }
+}
+
+fn adb_file_dialog() -> rfd::FileDialog {
+    let dialog = rfd::FileDialog::new().set_title(format!("Select {}", adb_binary_label()));
+
+    #[cfg(windows)]
+    {
+        dialog.add_filter("adb executable", &["exe"])
+    }
+
+    #[cfg(not(windows))]
+    {
+        dialog
     }
 }

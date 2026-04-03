@@ -19,6 +19,89 @@ pub fn launch_activity(serial: &str, bundle_id: &str, activity: &str) -> (bool, 
     run_device_action(serial, &["shell", "am", "start", "-n", &component])
 }
 
+/// Resolve the package's launchable activity component.
+pub fn resolve_launchable_activity(serial: &str, bundle_id: &str) -> Result<String, String> {
+    let bundle_id = bundle_id.trim();
+    if bundle_id.is_empty() {
+        return Err("Bundle ID must not be empty".into());
+    }
+
+    let primary = run_device_action(
+        serial,
+        &[
+            "shell",
+            "cmd",
+            "package",
+            "resolve-activity",
+            "--brief",
+            "--components",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            bundle_id,
+        ],
+    );
+    if let Some(component) = parse_resolved_component(&primary.1) {
+        return Ok(component);
+    }
+
+    let fallback = run_device_action(
+        serial,
+        &[
+            "shell",
+            "pm",
+            "resolve-activity",
+            "--brief",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            bundle_id,
+        ],
+    );
+    if let Some(component) = parse_resolved_component(&fallback.1) {
+        return Ok(component);
+    }
+
+    if output_says_no_launch_activity(&primary.1) || output_says_no_launch_activity(&fallback.1) {
+        Err(format!(
+            "No launchable MAIN/LAUNCHER activity found for {bundle_id}. Set Settings > Activity / Component explicitly if the app uses a non-standard entry point."
+        ))
+    } else if !primary.1.trim().is_empty() {
+        Err(primary.1)
+    } else if !fallback.1.trim().is_empty() {
+        Err(fallback.1)
+    } else {
+        Err(format!(
+            "Failed to resolve a launchable activity for {bundle_id}"
+        ))
+    }
+}
+
+/// Launch an app, resolving the launchable activity when no explicit activity is configured.
+pub fn launch_app(serial: &str, bundle_id: &str, activity: &str) -> (bool, String) {
+    let activity = activity.trim();
+    if !activity.is_empty() {
+        return launch_activity(serial, bundle_id, activity);
+    }
+
+    match resolve_launchable_activity(serial, bundle_id) {
+        Ok(component) => run_device_action(serial, &["shell", "am", "start", "-n", &component]),
+        Err(resolve_error) => {
+            let (ok, monkey_output) = launch_via_monkey(serial, bundle_id);
+            if ok {
+                (true, monkey_output)
+            } else {
+                (
+                    false,
+                    format!("{resolve_error}\nMonkey fallback: {monkey_output}"),
+                )
+            }
+        }
+    }
+}
+
 /// Launch an app via monkey (fallback when no activity class is configured).
 pub fn launch_via_monkey(serial: &str, bundle_id: &str) -> (bool, String) {
     let bundle_id = bundle_id.trim();
@@ -373,6 +456,22 @@ fn build_activity_component(bundle_id: &str, activity: &str) -> Result<String, S
     }
 
     Ok(format!("{bundle_id}/{activity}"))
+}
+
+fn parse_resolved_component(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .rev()
+        .find(|line| line.contains('/') && !line.starts_with("priority="))
+        .map(std::string::ToString::to_string)
+}
+
+fn output_says_no_launch_activity(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("no activity found")
+        || lower.contains("unable to resolve intent")
+        || lower.contains("nothing found")
 }
 
 fn safe_local_filename(name: &str) -> String {

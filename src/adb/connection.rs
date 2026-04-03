@@ -1,4 +1,4 @@
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use super::{adb_command, CommandExt, CREATE_NO_WINDOW};
 
@@ -18,6 +18,26 @@ pub fn adb_connect(addr: &str) -> (bool, String) {
             let text = format_output(&o.stdout, &o.stderr);
             let ok = text.contains("connected") && !text.contains("cannot");
             (ok, text)
+        }
+        None => (false, "Failed to run adb".into()),
+    }
+}
+
+/// Pair with a device for Android 11+ wireless debugging.
+pub fn adb_pair(addr: &str, code: &str) -> (bool, String) {
+    let output = adb_command().and_then(|mut c| {
+        c.args(["pair", addr, code])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()
+    });
+
+    match output {
+        Some(o) => {
+            let text = format_output(&o.stdout, &o.stderr);
+            (o.status.success(), text)
         }
         None => (false, "Failed to run adb".into()),
     }
@@ -63,6 +83,33 @@ pub fn adb_disconnect_all() -> (bool, String) {
     }
 }
 
+/// Show the current `adb devices -l` output.
+pub fn adb_devices_long() -> (bool, String) {
+    run_global_adb_action(&["devices", "-l"])
+}
+
+/// Restart the global ADB server.
+pub fn restart_adb_server() -> (bool, String) {
+    let (kill_ok, kill_msg) = run_global_adb_action(&["kill-server"]);
+    let (start_ok, start_msg) = run_global_adb_action(&["start-server"]);
+    let ok = kill_ok && start_ok;
+
+    let mut parts = Vec::new();
+    if !kill_msg.trim().is_empty() {
+        parts.push(format!("kill-server: {kill_msg}"));
+    }
+    if !start_msg.trim().is_empty() {
+        parts.push(format!("start-server: {start_msg}"));
+    }
+
+    let message = if parts.is_empty() {
+        "ADB server restarted".to_string()
+    } else {
+        parts.join(" | ")
+    };
+    (ok, message)
+}
+
 /// Check if a serial is an emulator.
 pub fn is_emulator_serial(serial: &str) -> bool {
     serial.starts_with("emulator-")
@@ -83,7 +130,7 @@ pub fn is_tcp_device(serial: &str) -> bool {
 #[cfg(windows)]
 pub fn open_wsa_settings() -> bool {
     use std::os::windows::process::CommandExt as WinCmdExt;
-    let mut cmd = Command::new("cmd.exe");
+    let mut cmd = std::process::Command::new("cmd.exe");
     cmd.args(["/c", "start", "wsa-settings:"]);
     WinCmdExt::creation_flags(&mut cmd, CREATE_NO_WINDOW);
     cmd.status()
@@ -100,7 +147,7 @@ pub fn open_wsa_settings() -> bool {
 #[cfg(windows)]
 pub fn launch_wsa() -> bool {
     use std::os::windows::process::CommandExt as WinCmdExt;
-    let mut cmd = Command::new("cmd.exe");
+    let mut cmd = std::process::Command::new("cmd.exe");
     cmd.args(["/c", "start", "wsa://"]);
     WinCmdExt::creation_flags(&mut cmd, CREATE_NO_WINDOW);
     cmd.status()
@@ -122,5 +169,24 @@ fn format_output(stdout: &[u8], stderr: &[u8]) -> String {
         (true, false) => stderr,
         (false, false) => format!("{stdout}\n{stderr}"),
         (true, true) => String::new(),
+    }
+}
+
+fn run_global_adb_action(args: &[&str]) -> (bool, String) {
+    let output = adb_command().and_then(|mut c| {
+        c.args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .ok()
+    });
+
+    match output {
+        Some(o) => {
+            let text = format_output(&o.stdout, &o.stderr);
+            (o.status.success(), text)
+        }
+        None => (false, "Failed to run adb".into()),
     }
 }

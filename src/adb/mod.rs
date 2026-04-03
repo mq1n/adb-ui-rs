@@ -5,6 +5,7 @@ mod device_mgmt;
 mod devices;
 mod emulator;
 mod explorer;
+mod fastboot;
 mod file_logs;
 mod logcat;
 mod screen;
@@ -18,16 +19,19 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 pub use connection::{
-    adb_connect, adb_disconnect, adb_disconnect_all, is_emulator_serial, is_tcp_device,
-    is_wsa_serial, launch_wsa, open_wsa_settings,
+    adb_connect, adb_devices_long, adb_disconnect, adb_disconnect_all, adb_pair,
+    is_emulator_serial, is_tcp_device, is_wsa_serial, launch_wsa, open_wsa_settings,
+    restart_adb_server,
 };
 pub use debug::{
+    clear_heap_watch_limit, dump_heap_to_file, launch_with_allocation_tracking,
     list_atrace_categories, list_dumpsys_services, run_atrace, run_debug_shell,
-    run_simpleperf_record, run_simpleperf_stat, run_strace,
+    run_simpleperf_record, run_simpleperf_stat, run_strace, set_heap_watch_limit,
 };
 pub use deploy::{
     check_run_as, crash_logcat, deploy_via_run_as, fix_permissions, get_app_pid, launch_activity,
-    launch_via_monkey, open_app_settings, pull_logs_to_dir, purge_app, push_directory,
+    launch_app, launch_via_monkey, open_app_settings, pull_logs_to_dir, purge_app, push_directory,
+    resolve_launchable_activity,
 };
 pub use device_mgmt::{get_device_props, run_device_action};
 pub use devices::list_devices;
@@ -39,6 +43,7 @@ pub use explorer::{
     cat_remote_file, delete_remote, list_remote_dir, mkdir_remote, pull_remote_file,
     push_remote_file, run_explorer_command,
 };
+pub use fastboot::{flash_partition, list_fastboot_devices};
 pub use file_logs::{pull_file_logs, spawn_file_watcher};
 pub use logcat::{fetch_log_snapshot, spawn_log_watcher, spawn_logcat};
 pub use screen::{capture_screenshot_bytes, start_screen_record};
@@ -269,6 +274,7 @@ pub enum AdbMsg {
     ShellExited(String, String), // (serial, reason)
     DeviceProps(String, Vec<(String, String)>),
     DeviceActionResult(String, String),
+    ResolvedLaunchActivity(String, String),
     ExplorerListing(String, u64, String, Vec<RemoteFileEntry>),
     ExplorerError(String, u64, String),
     ExplorerPreview(String, u64, u64, Result<String, String>),

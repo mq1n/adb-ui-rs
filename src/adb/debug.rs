@@ -1,5 +1,6 @@
 use super::{adb_command, adb_path, CommandExt, CREATE_NO_WINDOW};
 use std::process::Stdio;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Run a debug shell command and return stdout. Blocking.
 pub fn run_debug_shell(serial: &str, shell_cmd: &str) -> Result<String, String> {
@@ -129,4 +130,163 @@ pub fn run_strace(serial: &str, pid: &str, duration_secs: u32) -> Result<String,
          echo 'strace ended or not available (needs root)'"
     );
     run_debug_shell(serial, &cmd)
+}
+
+/// Launch an app with allocation tracking enabled.
+pub fn launch_with_allocation_tracking(
+    serial: &str,
+    bundle_id: &str,
+    activity: &str,
+) -> Result<String, String> {
+    let bundle_id = bundle_id.trim();
+    if bundle_id.is_empty() {
+        return Err("Bundle ID is required".into());
+    }
+
+    let command = if activity.trim().is_empty() {
+        let component = super::resolve_launchable_activity(serial, bundle_id)?;
+        format!(
+            "am start -S -W --track-allocation -n {}",
+            super::shell_quote(&component)
+        )
+    } else {
+        let component = build_activity_component(bundle_id, activity)?;
+        format!(
+            "am start -S -W --track-allocation -n {}",
+            super::shell_quote(&component)
+        )
+    };
+
+    run_debug_shell(serial, &command)
+}
+
+/// Set the heap watch limit for a process or package.
+pub fn set_heap_watch_limit(
+    serial: &str,
+    process: &str,
+    limit_bytes: u64,
+) -> Result<String, String> {
+    let process = process.trim();
+    if process.is_empty() {
+        return Err("Process or package name is required".into());
+    }
+
+    let command = format!(
+        "am set-watch-heap {} {}",
+        super::shell_quote(process),
+        limit_bytes
+    );
+    run_debug_shell(serial, &command)
+}
+
+/// Clear a previously configured heap watch.
+pub fn clear_heap_watch_limit(serial: &str, process: &str) -> Result<String, String> {
+    let process = process.trim();
+    if process.is_empty() {
+        return Err("Process or package name is required".into());
+    }
+
+    let command = format!(
+        "am clear-watch-heap {} 2>/dev/null || am clear-watch-heap",
+        super::shell_quote(process)
+    );
+    run_debug_shell(serial, &command)
+}
+
+/// Dump a managed or native heap and pull it to a local path.
+pub fn dump_heap_to_file(
+    serial: &str,
+    process: &str,
+    local_path: &str,
+    native: bool,
+) -> Result<String, String> {
+    let process = process.trim();
+    if process.is_empty() {
+        return Err("Process or package name is required".into());
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let safe_process = super::sanitize_shell_arg(process);
+    let remote_path = format!("/data/local/tmp/{safe_process}_{timestamp}_heap.hprof");
+
+    let mut args = vec![
+        "-s".to_string(),
+        serial.to_string(),
+        "shell".to_string(),
+        "am".to_string(),
+        "dumpheap".to_string(),
+    ];
+    if native {
+        args.push("-n".to_string());
+    }
+    args.push(process.to_string());
+    args.push(remote_path.clone());
+
+    let dump_output = adb_command()
+        .ok_or_else(|| adb_path().unwrap_err())?
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("Failed to run adb dumpheap: {error}"))?;
+
+    if !dump_output.status.success() {
+        let stderr = String::from_utf8_lossy(&dump_output.stderr)
+            .trim()
+            .to_string();
+        let stdout = String::from_utf8_lossy(&dump_output.stdout)
+            .trim()
+            .to_string();
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+
+    let pull_output = adb_command()
+        .ok_or_else(|| adb_path().unwrap_err())?
+        .args(["-s", serial, "pull", &remote_path, local_path])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("Failed to pull heap dump: {error}"))?;
+
+    let _ = adb_command()
+        .ok_or_else(|| adb_path().unwrap_err())?
+        .args(["-s", serial, "shell", "rm", "-f", &remote_path])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+
+    if !pull_output.status.success() {
+        let stderr = String::from_utf8_lossy(&pull_output.stderr)
+            .trim()
+            .to_string();
+        let stdout = String::from_utf8_lossy(&pull_output.stdout)
+            .trim()
+            .to_string();
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+
+    let heap_kind = if native { "Native" } else { "Managed" };
+    Ok(format!(
+        "{heap_kind} heap dump saved to {local_path}\nSource process: {process}"
+    ))
+}
+
+fn build_activity_component(bundle_id: &str, activity: &str) -> Result<String, String> {
+    let bundle_id = bundle_id.trim();
+    let activity = activity.trim();
+    if bundle_id.is_empty() || activity.is_empty() {
+        return Err("Bundle ID and activity must not be empty".into());
+    }
+
+    if activity.contains('/') {
+        Ok(activity.to_string())
+    } else {
+        Ok(format!("{bundle_id}/{activity}"))
+    }
 }

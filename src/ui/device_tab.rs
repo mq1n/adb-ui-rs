@@ -1,5 +1,6 @@
 use eframe::egui;
 
+use super::helpers::open_in_file_manager;
 use super::AppLogLevel;
 use crate::adb::{self, AdbMsg};
 
@@ -55,6 +56,7 @@ impl super::App {
         self.draw_device_action_log_panel(ui, serial, &serial_owned, right_rect);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn draw_device_management_sections(
         &mut self,
         ui: &mut egui::Ui,
@@ -402,7 +404,7 @@ impl super::App {
             if ui
                 .button("Launch")
                 .on_hover_text(if activity.is_empty() {
-                    "Launch via monkey (set activity in Settings for am start)"
+                    "Auto-resolve the launchable activity (set Settings > Activity / Component to override)"
                 } else {
                     "am start -n bundle/activity"
                 })
@@ -415,10 +417,29 @@ impl super::App {
                 let act = activity.clone();
                 let tx = self.tx.clone();
                 std::thread::spawn(move || {
-                    let (ok, msg) = if act.is_empty() {
-                        adb::launch_via_monkey(&serial, &bid)
+                    let (ok, msg) = if act.trim().is_empty() {
+                        match adb::resolve_launchable_activity(&serial, &bid) {
+                            Ok(component) => {
+                                let _ = tx.send(AdbMsg::ResolvedLaunchActivity(
+                                    serial.clone(),
+                                    component.clone(),
+                                ));
+                                adb::launch_activity(&serial, &bid, &component)
+                            }
+                            Err(resolve_error) => {
+                                let (ok, monkey_output) = adb::launch_via_monkey(&serial, &bid);
+                                if ok {
+                                    (true, monkey_output)
+                                } else {
+                                    (
+                                        false,
+                                        format!("{resolve_error}\nMonkey fallback: {monkey_output}"),
+                                    )
+                                }
+                            }
+                        }
                     } else {
-                        adb::launch_activity(&serial, &bid, &act)
+                        adb::launch_app(&serial, &bid, &act)
                     };
                     let status = if ok { "Launched" } else { "Launch failed" };
                     let _ = tx.send(AdbMsg::DeviceActionResult(
@@ -513,21 +534,14 @@ impl super::App {
                                     format!("Pull logs warnings: {}", summary.warnings.join("; ")),
                                 ));
                             }
-                            let _ = tx.send(AdbMsg::PullLogsResult(serial, Ok(summary.count)));
-                            // Open in file manager
-                            #[cfg(windows)]
-                            {
-                                let _ = std::process::Command::new("explorer.exe")
-                                    .arg(dest.to_string_lossy().replace('/', "\\"))
-                                    .spawn();
-                            }
-                            #[cfg(target_os = "macos")]
-                            {
-                                let _ = std::process::Command::new("open").arg(&dest).spawn();
-                            }
-                            #[cfg(target_os = "linux")]
-                            {
-                                let _ = std::process::Command::new("xdg-open").arg(&dest).spawn();
+                            let _ = tx.send(AdbMsg::PullLogsResult(serial.clone(), Ok(summary.count)));
+                            if let Err(error) = open_in_file_manager(&dest) {
+                                let _ = tx.send(AdbMsg::DeviceActionResult(
+                                    serial,
+                                    format!(
+                                        "Pull logs completed, but the folder did not open automatically: {error}"
+                                    ),
+                                ));
                             }
                         }
                         Err(e) => {
@@ -601,6 +615,8 @@ impl super::App {
         });
 
         ui.add_space(8.0);
+
+        self.draw_device_extended_tools(ui, serial, serial_owned);
     }
 
     fn draw_device_testing_and_diagnostics(

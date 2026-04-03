@@ -9,12 +9,18 @@ It gives each connected Android device or emulator its own workspace for logs, s
 ## Features
 
 - Live `logcat` streaming with filters and multiple buffer views
+- Per-device logcat filtering by text, priority, tag, and PID
 - App file log pulling and live watching
 - Interactive device shell
 - Screenshot capture and screen recording
 - Remote file explorer with upload, download, preview, and delete actions
 - Device and app management actions
+- Package management helpers for package listing, split APK installs, permission grant/revoke, enable/disable, clear data, and force-stop
+- Port forwarding, reverse forwarding, Wi-Fi ADB pairing, and ADB server controls
 - Debugging and profiling helpers built around `dumpsys`, `atrace`, `simpleperf`, and `strace`
+- Explicit memory allocation tracking, heap-watch controls, and managed/native heap dumps
+- Developer command surfaces for `am`, `pm`, `wm`, `settings`, `cmd`, `content`, and SQLite access through `run-as`
+- OTA sideload and fastboot flash companion tooling
 - System monitoring views for processes, CPU, storage, battery, thermal, I/O, and services
 - App data deployment to external storage or app-internal storage through `run-as`
 - Emulator, Wi-Fi ADB, and WSA helpers
@@ -28,7 +34,7 @@ It gives each connected Android device or emulator its own workspace for logs, s
 Notes:
 
 - The app looks for `adb` on `PATH` first.
-- On Windows, if autodetection fails, the Settings panel can be used to point the app to `adb.exe`.
+- If autodetection fails, the Settings panel can be used to point the app to the `adb` executable.
 - Some features depend on device-side tooling and permissions. Internal file access and internal deploys typically require `run-as <package>` to work, which usually means the target app is installed as debuggable.
 
 ## Quick Start
@@ -61,6 +67,8 @@ The project also builds on Linux in CI. On Ubuntu or Debian-based systems, insta
 sudo apt-get update
 sudo apt-get install -y libgtk-3-dev libxdo-dev libdbus-1-dev
 ```
+
+If you build inside WSL, use a current Rust toolchain from `rustup` (or another Rust `1.92+` install). Older distro-packaged Cargo versions such as Ubuntu's `1.75` cannot read this repository's `Cargo.lock` v4.
 
 ## Configuration
 
@@ -118,11 +126,18 @@ Each connected device gets its own tab. Inside each device tab, the app provides
 - `Shell`: interactive shell session with command history
 - `Screen`: screenshots, auto-capture, recording, export, and clipboard actions
 - `Explorer`: remote file browsing and file operations
-- `Device`: device info, app actions, installs, bugreport, UI dump, emulator helpers, and quick diagnostics
+- `Device`: device info, app actions, package/network/content tools, OTA helpers, bugreport, UI dump, emulator helpers, and quick diagnostics
 - `Debug`: focused debugging and profiling tools
 - `Monitor`: system snapshots for common device diagnostics
 - `Deploy`: push local directories into app storage
 - `App Log`: internal log for the desktop app itself
+
+The Settings panel also exposes global platform-tool workflows:
+
+- `adb devices -l`
+- `adb kill-server` / `adb start-server`
+- `adb pair` for Android 11+ wireless debugging
+- `fastboot devices` and partition flashing
 
 ## Storage Conventions
 

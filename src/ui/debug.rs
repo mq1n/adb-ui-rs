@@ -225,6 +225,22 @@ impl super::App {
         });
     }
 
+    fn run_debug_task<F>(&mut self, serial: &str, cat: DebugCategory, task: F)
+    where
+        F: FnOnce(String) -> Result<String, String> + Send + 'static,
+    {
+        if let Some(ds) = self.devices.get_mut(serial) {
+            ds.debug_loading.insert(cat);
+        }
+        let serial = serial.to_string();
+        let tx = self.tx.clone();
+        let idx = cat.index();
+        std::thread::spawn(move || {
+            let result = task(serial.clone());
+            let _ = tx.send(AdbMsg::DebugOutput(serial, idx, result));
+        });
+    }
+
     fn draw_debug_command_row(
         &mut self,
         ui: &mut egui::Ui,
@@ -1073,7 +1089,117 @@ impl super::App {
         });
 
         ui.separator();
+        ui.label(egui::RichText::new("Allocation Tracking").small().strong());
+
+        ui.horizontal(|ui| {
+            if ui
+                .button("Launch w/ Tracking")
+                .on_hover_text("Restart the app with `am start --track-allocation`")
+                .clicked()
+            {
+                let Some(bundle_id) =
+                    self.require_bundle_id(serial, "launch with allocation tracking")
+                else {
+                    return;
+                };
+                let activity = self.config.activity_class.clone();
+                self.run_debug_task(serial, cat, move |serial| {
+                    adb::launch_with_allocation_tracking(&serial, &bundle_id, &activity)
+                });
+            }
+
+            if ui
+                .button("Managed Heap Dump...")
+                .on_hover_text("Run `am dumpheap` and save a managed heap dump locally")
+                .clicked()
+            {
+                self.dump_memory_heap(serial, cat, false);
+            }
+
+            if ui
+                .button("Native Heap Dump...")
+                .on_hover_text("Run `am dumpheap -n` and save a native heap dump locally")
+                .clicked()
+            {
+                self.dump_memory_heap(serial, cat, true);
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Heap Watch:");
+            if let Some(ds) = self.devices.get_mut(serial) {
+                ui.add_sized(
+                    [60.0, 20.0],
+                    egui::TextEdit::singleline(&mut ds.memory_watch_limit_mb).hint_text("256"),
+                );
+            }
+            ui.label("MB");
+
+            if ui
+                .button("Set Watch")
+                .on_hover_text("Trigger heap monitoring via `am set-watch-heap`")
+                .clicked()
+            {
+                let Some(bundle_id) = self.require_bundle_id(serial, "set heap watch") else {
+                    return;
+                };
+                let raw_limit = self
+                    .devices
+                    .get(serial)
+                    .map_or_else(String::new, |ds| ds.memory_watch_limit_mb.clone());
+                let limit_mb =
+                    self.parse_u32_input_or_log(serial, "heap watch limit", &raw_limit, 256);
+                let limit_bytes = u64::from(limit_mb) * 1024 * 1024;
+                self.run_debug_task(serial, cat, move |serial| {
+                    adb::set_heap_watch_limit(&serial, &bundle_id, limit_bytes)
+                });
+            }
+
+            if ui
+                .button("Clear Watch")
+                .on_hover_text("Clear heap monitoring for the configured app")
+                .clicked()
+            {
+                let Some(bundle_id) = self.require_bundle_id(serial, "clear heap watch") else {
+                    return;
+                };
+                self.run_debug_task(serial, cat, move |serial| {
+                    adb::clear_heap_watch_limit(&serial, &bundle_id)
+                });
+            }
+        });
+        ui.colored_label(
+            egui::Color32::from_rgb(140, 140, 140),
+            "Tracked launch uses `am start -S -W --track-allocation`. Heap watch value is entered in MB and converted for `am set-watch-heap`.",
+        );
+
+        ui.separator();
         self.draw_debug_output_area(ui, serial, cat);
+    }
+
+    fn dump_memory_heap(&mut self, serial: &str, cat: DebugCategory, native: bool) {
+        let Some(bundle_id) = self.require_bundle_id(serial, "dump heap") else {
+            return;
+        };
+
+        let file_name = if native {
+            "native_heap.hprof"
+        } else {
+            "managed_heap.hprof"
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Save heap dump")
+            .set_file_name(file_name)
+            .save_file()
+        else {
+            self.log_cancelled(serial, "save heap dump");
+            return;
+        };
+
+        let local_path = path.display().to_string();
+        self.run_debug_task(serial, cat, move |serial| {
+            adb::dump_heap_to_file(&serial, &bundle_id, &local_path, native)
+        });
     }
 
     // ─── Debug: GPU / Graphics ──────────────────────────────────────────────

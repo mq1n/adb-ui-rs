@@ -186,6 +186,44 @@ pub(super) fn copy_png_as_file(png_bytes: &[u8], timestamp: &str) -> Result<(), 
     Ok(())
 }
 
+pub(super) fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        std::process::Command::new("explorer.exe")
+            .arg(path)
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("Explorer launch failed for {}: {e}", path.display()))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("open failed for {}: {e}", path.display()))
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("xdg-open failed for {}: {e}", path.display()))
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = path;
+        Err("Opening folders is not supported on this platform".to_string())
+    }
+}
+
 /// Copy a file to the Windows clipboard as `CF_HDROP` (file drop).
 #[cfg(windows)]
 pub(super) fn copy_file_to_clipboard(path: &std::path::Path) {
