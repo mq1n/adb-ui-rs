@@ -1,0 +1,28 @@
+[package]
+name = "adb-ui-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+description = "Desktop GUI for Android Debug Bridge (ADB): logcat, file logs, shell, screen capture, and device management"
+license = "MIT"
+keywords = ["adb", "android", "logcat", "gui", "debugging"]
+categories = ["development-tools::debugging", "gui"]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[dependencies]
+eframe = { version = "0.34.1", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+egui = "0.34.1"
+crossbeam-channel = "0.5.15"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+rfd = "0.17.2"
+egui_extras = "0.34.1"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+arboard = "3.6.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
