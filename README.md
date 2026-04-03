@@ -42,7 +42,7 @@ Notes:
 Clone the repository and run the app:
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/mq1n/adb-ui-rs
 cd adb_log_viewer
 cargo run
 ```
