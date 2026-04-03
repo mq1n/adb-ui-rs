@@ -7,6 +7,9 @@ use std::sync::Arc;
 
 use eframe::egui;
 
+use crate::adb::mirror::{
+    MirrorConfig, MirrorControl, MirrorFrameBuffer, MirrorHandle, MirrorMode,
+};
 use crate::adb::{DeviceInfo, FileEntry, RemoteFileEntry};
 
 const MAX_LOGCAT_LINES: usize = 50_000;
@@ -276,6 +279,64 @@ pub struct ScreenUiState {
     pub recording: bool,
 }
 
+/// UI state for the screen mirror tab.
+pub struct MirrorUiState {
+    /// Whether mirroring is currently active.
+    pub active: bool,
+    /// Status message displayed in the toolbar.
+    pub status: String,
+    /// Decoded video frame dimensions (from H.264 stream).
+    pub video_width: u32,
+    pub video_height: u32,
+    /// Actual device display resolution (for input coordinate mapping).
+    pub device_width: u32,
+    pub device_height: u32,
+    /// Total decoded frames (for FPS calculation).
+    pub frame_count: u64,
+    /// Timestamp of last FPS sample.
+    pub last_fps_time: f64,
+    /// Frame count at last FPS sample.
+    pub last_fps_count: u64,
+    /// Current frames per second.
+    pub fps: f32,
+    /// Drag gesture start position (egui screen coords).
+    pub drag_start: Option<egui::Pos2>,
+    /// Drag gesture current position (egui screen coords).
+    pub drag_current: Option<egui::Pos2>,
+}
+
+impl Default for MirrorUiState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            status: String::new(),
+            video_width: 0,
+            video_height: 0,
+            device_width: 0,
+            device_height: 0,
+            frame_count: 0,
+            last_fps_time: 0.0,
+            last_fps_count: 0,
+            fps: 0.0,
+            drag_start: None,
+            drag_current: None,
+        }
+    }
+}
+
+/// State for the on-device mirror server management panel.
+#[derive(Default)]
+pub struct MirrorServerState {
+    /// Whether the server JAR is installed on the device (`None` = unknown).
+    pub installed: Option<bool>,
+    /// Whether the server process is currently running (`None` = unknown).
+    pub running: Option<bool>,
+    /// A background server-management operation is in progress.
+    pub busy: bool,
+    /// Last status message from a server operation.
+    pub status: String,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct TestRunState {
     pub monkey: bool,
@@ -409,7 +470,7 @@ pub struct DeviceState {
     pub file_status: String,
     /// Current live file-watcher session, used to ignore stale watcher output after restarts.
     pub file_watch_session: u64,
-    /// Active sub-tab: 0=Logs, 1=File Logs, 2=Shell, 3=Screen, 4=Explorer, 5=Device, 6=Debug, 7=Monitor, 8=Deploy, 9=App Log
+    /// Active sub-tab: 0=Logs, 1=File Logs, 2=Shell, 3=Screen, 4=Explorer, 5=Device, 6=Debug, 7=Monitor, 8=Deploy, 9=Mirror, 10=App Log
     pub active_sub_tab: usize,
     /// Currently selected log source in the Logs tab sidebar.
     pub active_log_source: LogSource,
@@ -562,6 +623,25 @@ pub struct DeviceState {
     pub connection_tools: ConnectionToolsState,
     /// Advanced shell-backed command helpers.
     pub command_tools: CommandToolsState,
+    // ── Mirror tab ────────────────────────────────────────────────────
+    /// Mirror UI state.
+    pub mirror: MirrorUiState,
+    /// Mirror encoding/resolution config.
+    pub mirror_config: MirrorConfig,
+    /// Shared frame buffer (decode thread → UI thread).
+    pub mirror_frame_buffer: Option<Arc<MirrorFrameBuffer>>,
+    /// egui texture for the current mirror frame.
+    pub mirror_texture: Option<egui::TextureHandle>,
+    /// Stop flag for the mirror background thread.
+    pub mirror_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Input control handle for the active mirror session.
+    pub mirror_control: Option<MirrorControl>,
+    /// Current mirror session token used to discard stale worker messages.
+    pub mirror_session: u64,
+    /// Selected mirror mode (screenrecord or server).
+    pub mirror_mode: MirrorMode,
+    /// On-device server management state.
+    pub mirror_server: MirrorServerState,
 }
 
 impl DeviceState {
@@ -656,6 +736,15 @@ impl DeviceState {
             package_tools: PackageToolsState::default(),
             connection_tools: ConnectionToolsState::default(),
             command_tools: CommandToolsState::default(),
+            mirror: MirrorUiState::default(),
+            mirror_config: MirrorConfig::default(),
+            mirror_frame_buffer: None,
+            mirror_texture: None,
+            mirror_stop: None,
+            mirror_control: None,
+            mirror_session: 0,
+            mirror_mode: MirrorMode::default(),
+            mirror_server: MirrorServerState::default(),
         }
     }
 
@@ -768,6 +857,49 @@ impl DeviceState {
     pub const fn start_next_file_watch_session(&mut self) -> u64 {
         self.file_watch_session = next_session_id(self.file_watch_session);
         self.file_watch_session
+    }
+
+    /// Advance the mirror session and return the new session token.
+    pub const fn start_next_mirror_session(&mut self) -> u64 {
+        self.mirror_session = next_session_id(self.mirror_session);
+        self.mirror_session
+    }
+
+    /// Stop the current mirror worker and invalidate any in-flight messages for it.
+    pub fn cancel_mirror_session(&mut self, status: impl Into<String>) {
+        if self.mirror_stop.is_some()
+            || self.mirror_frame_buffer.is_some()
+            || self.mirror_texture.is_some()
+            || self.mirror_control.is_some()
+            || self.mirror.active
+        {
+            self.mirror_session = next_session_id(self.mirror_session);
+        }
+        self.finish_mirror_session(status);
+    }
+
+    /// Attach runtime handles for a freshly started mirror session.
+    pub fn attach_mirror_session(&mut self, session: u64, handle: MirrorHandle) {
+        self.mirror = MirrorUiState::default();
+        self.mirror.active = true;
+        self.mirror.status = "Starting...".to_string();
+        self.mirror_session = session;
+        self.mirror_stop = Some(handle.stop);
+        self.mirror_frame_buffer = Some(handle.frame_buffer);
+        self.mirror_control = Some(handle.control);
+        self.mirror_texture = None;
+    }
+
+    /// Tear down runtime handles for the active mirror session and keep a final status message.
+    pub fn finish_mirror_session(&mut self, status: impl Into<String>) {
+        if let Some(stop) = self.mirror_stop.take() {
+            stop.store(true, Ordering::Release);
+        }
+        self.mirror = MirrorUiState::default();
+        self.mirror.status = status.into();
+        self.mirror_frame_buffer = None;
+        self.mirror_texture = None;
+        self.mirror_control = None;
     }
 
     /// Stop a log source watcher.

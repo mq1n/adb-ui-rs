@@ -8,6 +8,7 @@ mod explorer;
 mod fastboot;
 mod file_logs;
 mod logcat;
+pub mod mirror;
 mod screen;
 mod shell;
 mod tools;
@@ -311,6 +312,21 @@ pub enum AdbMsg {
     CrashLogcat(String, Result<String, String>),
     /// Pull logs to folder result: (serial, `Ok(count)` or `Err(msg)`).
     PullLogsResult(String, Result<usize, String>),
+    /// Screen mirror stopped: (serial, mirror_session, reason).
+    MirrorStopped(String, u64, String),
+    /// Screen mirror: device display resolution resolved (serial, mirror_session, width, height).
+    MirrorDisplaySize(String, u64, u32, u32),
+    /// Mirror server management result: (serial, installed, running, message).
+    MirrorServerStatus(String, Option<bool>, Option<bool>, String),
+    /// Mirror backend log line: (serial, level, message).
+    MirrorLog(String, AdbLogLevel, String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdbLogLevel {
+    Info,
+    Warn,
+    Error,
 }
 
 #[derive(Debug, Clone)]

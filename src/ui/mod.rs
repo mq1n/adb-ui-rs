@@ -7,6 +7,7 @@ mod explorer;
 mod file_logs;
 mod helpers;
 mod logs;
+mod mirror;
 mod monitor;
 mod screen;
 mod settings;
@@ -227,6 +228,34 @@ impl App {
         );
     }
 
+    fn log_mirror(&mut self, level: AppLogLevel, serial: &str, msg: impl Into<String>) {
+        self.log(level, format!("[{serial}] [mirror] {}", msg.into()));
+    }
+
+    fn log_mirror_info(&mut self, serial: &str, msg: impl Into<String>) {
+        self.log_mirror(AppLogLevel::Info, serial, msg);
+    }
+
+    fn log_mirror_warn(&mut self, serial: &str, msg: impl Into<String>) {
+        self.log_mirror(AppLogLevel::Warn, serial, msg);
+    }
+
+    fn log_mirror_error(&mut self, serial: &str, msg: impl Into<String>) {
+        self.log_mirror(AppLogLevel::Error, serial, msg);
+    }
+
+    fn log_mirror_status(&mut self, serial: &str, msg: &str) {
+        let lower = msg.to_lowercase();
+        let level = if lower.contains("failed") || lower.contains("error") {
+            AppLogLevel::Error
+        } else if lower.contains("stopped") || lower.contains("fallback") {
+            AppLogLevel::Warn
+        } else {
+            AppLogLevel::Info
+        };
+        self.log_mirror(level, serial, msg);
+    }
+
     fn log_defaulted_u32_input(&mut self, serial: &str, field: &str, raw: &str, default: u32) {
         self.log(
             AppLogLevel::Warn,
@@ -278,6 +307,10 @@ impl App {
         // Kill recording.
         if let Some(mut proc) = self.recording_procs.remove(serial) {
             let _ = proc.kill();
+        }
+        // Stop mirror.
+        if let Some(ds) = self.devices.get_mut(serial) {
+            ds.cancel_mirror_session("Stopped");
         }
         // Remove device state.
         self.devices.remove(serial);
@@ -846,6 +879,62 @@ impl App {
                         }
                     }
                 }
+                AdbMsg::MirrorStopped(serial, session, reason) => {
+                    let is_current = self
+                        .devices
+                        .get(&serial)
+                        .is_some_and(|ds| ds.mirror_session == session);
+                    if !is_current {
+                        self.log_mirror_warn(&serial, "Ignored stale stop event");
+                        continue;
+                    }
+
+                    let was_active = self.devices.get(&serial).is_some_and(|ds| ds.mirror.active);
+                    if was_active {
+                        self.log_mirror_warn(&serial, format!("Stopped: {reason}"));
+                    }
+                    if let Some(ds) = self.devices.get_mut(&serial) {
+                        // Full cleanup — matches stop_mirroring().
+                        ds.finish_mirror_session(format!("Stopped: {reason}"));
+                    }
+                }
+                AdbMsg::MirrorDisplaySize(serial, session, w, h) => {
+                    let is_current = self
+                        .devices
+                        .get(&serial)
+                        .is_some_and(|ds| ds.mirror_session == session);
+                    if !is_current {
+                        self.log_mirror_warn(&serial, "Ignored stale display-size event");
+                        continue;
+                    }
+                    if let Some(ds) = self.devices.get_mut(&serial) {
+                        ds.mirror.device_width = w;
+                        ds.mirror.device_height = h;
+                    }
+                    self.log_mirror_info(&serial, format!("Device display size: {w}x{h}"));
+                }
+                AdbMsg::MirrorServerStatus(serial, installed, running, msg) => {
+                    if let Some(ds) = self.devices.get_mut(&serial) {
+                        ds.mirror_server.installed = installed;
+                        ds.mirror_server.running = running;
+                        ds.mirror_server.busy = false;
+                        ds.mirror_server.status = msg;
+                    }
+                    if let Some(status) = self
+                        .devices
+                        .get(&serial)
+                        .map(|ds| ds.mirror_server.status.clone())
+                    {
+                        self.log_mirror_status(&serial, &status);
+                    } else {
+                        self.log_missing_device_state(&serial, "mirror server status");
+                    }
+                }
+                AdbMsg::MirrorLog(serial, level, msg) => match level {
+                    adb::AdbLogLevel::Info => self.log_mirror_info(&serial, msg),
+                    adb::AdbLogLevel::Warn => self.log_mirror_warn(&serial, msg),
+                    adb::AdbLogLevel::Error => self.log_mirror_error(&serial, msg),
+                },
             }
         }
 
@@ -934,6 +1023,7 @@ impl App {
                 ds.stop_watcher();
                 ds.stop_all_log_watchers();
                 ds.stop_explorer_follow();
+                ds.cancel_mirror_session("Device disconnected");
             }
         }
         self.devices.retain(|s, _| new_serials.contains(s));
@@ -1011,6 +1101,8 @@ impl App {
                 || !device.log_watchers.is_empty()
                 || !device.debug_loading.is_empty()
                 || !device.monitor_loading.is_empty()
+                || device.mirror.active
+                || device.mirror_server.busy
         });
 
         if has_active_work {
@@ -1025,6 +1117,7 @@ impl App {
             device.stop_watcher();
             device.stop_all_log_watchers();
             device.stop_explorer_follow();
+            device.cancel_mirror_session("Stopped");
             device.screen_auto_interval = None;
             device.screen.capturing = false;
             device.screen.recording = false;
@@ -1261,9 +1354,14 @@ impl App {
                     ds.active_sub_tab = 8;
                 }
             }
-            if ui.selectable_label(active_sub == 9, "App Log").clicked() {
+            if ui.selectable_label(active_sub == 9, "Mirror").clicked() {
                 if let Some(ds) = self.devices.get_mut(&serial_owned) {
                     ds.active_sub_tab = 9;
+                }
+            }
+            if ui.selectable_label(active_sub == 10, "App Log").clicked() {
+                if let Some(ds) = self.devices.get_mut(&serial_owned) {
+                    ds.active_sub_tab = 10;
                 }
             }
         });
@@ -1279,7 +1377,8 @@ impl App {
             6 => self.draw_debug_tab(ui, &serial_owned),
             7 => self.draw_monitor_tab(ui, &serial_owned),
             8 => self.draw_deploy_tab(ui, &serial_owned),
-            9 => self.draw_app_log_tab(ui),
+            9 => self.draw_mirror_tab(ui, &serial_owned),
+            10 => self.draw_app_log_tab(ui),
             _ => {}
         }
     }
