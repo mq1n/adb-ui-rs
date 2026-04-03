@@ -4,6 +4,8 @@
 
 It gives each connected Android device or emulator its own workspace for logs, shell access, file browsing, screenshots, debugging, monitoring, and app-focused deployment tasks.
 
+![ADB UI screenshot](assets/screenshot_1.png)
+
 ## Features
 
 - Live `logcat` streaming with filters and multiple buffer views
