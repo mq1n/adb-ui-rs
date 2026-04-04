@@ -304,6 +304,25 @@ impl super::App {
             ui.separator();
 
             if let Some(ds) = self.devices.get_mut(&serial_owned) {
+                ui.checkbox(&mut ds.logcat_ui.auto_scroll, "Auto-scroll");
+            }
+
+            if let Some(ds) = self.devices.get(serial) {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let status_color = if ds.logcat_ui.running {
+                        egui::Color32::from_rgb(100, 200, 100)
+                    } else {
+                        egui::Color32::from_rgb(180, 180, 180)
+                    };
+                    ui.colored_label(status_color, &ds.logcat_status);
+                    ui.label(format!("{} lines", ds.logcat_lines.len()));
+                });
+            }
+        });
+
+        // Second toolbar row: filters.
+        ui.horizontal(|ui| {
+            if let Some(ds) = self.devices.get_mut(&serial_owned) {
                 ui.label("Level:");
                 egui::ComboBox::from_id_salt(format!("level_{serial}"))
                     .selected_text(LEVEL_NAMES[ds.level_filter])
@@ -343,24 +362,6 @@ impl super::App {
                     egui::TextEdit::singleline(&mut ds.logcat_pid_filter).hint_text("1234"),
                 )
                 .on_hover_text("Show only lines from this process ID");
-            }
-
-            ui.separator();
-
-            if let Some(ds) = self.devices.get_mut(&serial_owned) {
-                ui.checkbox(&mut ds.logcat_ui.auto_scroll, "Auto-scroll");
-            }
-
-            if let Some(ds) = self.devices.get(serial) {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let status_color = if ds.logcat_ui.running {
-                        egui::Color32::from_rgb(100, 200, 100)
-                    } else {
-                        egui::Color32::from_rgb(180, 180, 180)
-                    };
-                    ui.colored_label(status_color, &ds.logcat_status);
-                    ui.label(format!("{} lines", ds.logcat_lines.len()));
-                });
             }
         });
 
@@ -501,6 +502,25 @@ impl super::App {
             ui.separator();
 
             if let Some(ds) = self.devices.get_mut(&serial_owned) {
+                ui.checkbox(&mut ds.logcat_ui.auto_scroll, "Auto-scroll");
+            }
+
+            if let Some(ds) = self.devices.get(serial) {
+                let count = ds.log_buffers.get(&source).map_or(0, std::vec::Vec::len);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if is_watching {
+                        ui.colored_label(egui::Color32::from_rgb(100, 200, 100), "Watching");
+                        ui.separator();
+                    }
+                    ui.label(format!("{count} lines"));
+                    ui.colored_label(egui::Color32::from_rgb(140, 140, 140), source.label());
+                });
+            }
+        });
+
+        // Second toolbar row: filters.
+        ui.horizontal(|ui| {
+            if let Some(ds) = self.devices.get_mut(&serial_owned) {
                 ui.label("Filter:");
                 ui.text_edit_singleline(&mut ds.logcat_filter)
                     .on_hover_text("Case-insensitive substring filter");
@@ -527,24 +547,6 @@ impl super::App {
                     egui::TextEdit::singleline(&mut ds.logcat_pid_filter).hint_text("1234"),
                 )
                 .on_hover_text("Show only lines from this process ID");
-            }
-
-            ui.separator();
-
-            if let Some(ds) = self.devices.get_mut(&serial_owned) {
-                ui.checkbox(&mut ds.logcat_ui.auto_scroll, "Auto-scroll");
-            }
-
-            if let Some(ds) = self.devices.get(serial) {
-                let count = ds.log_buffers.get(&source).map_or(0, std::vec::Vec::len);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if is_watching {
-                        ui.colored_label(egui::Color32::from_rgb(100, 200, 100), "Watching");
-                        ui.separator();
-                    }
-                    ui.label(format!("{count} lines"));
-                    ui.colored_label(egui::Color32::from_rgb(140, 140, 140), source.label());
-                });
             }
         });
 

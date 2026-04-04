@@ -985,6 +985,7 @@ impl App {
                         adb::spawn_logcat(&dev.serial, session, self.tx.clone(), &self.config)
                     {
                         self.logcat_procs.insert(dev.serial.clone(), child);
+                        ds.logcat_status = "Running".into();
                         self.log(
                             AppLogLevel::Info,
                             format!("[{}] Logcat process spawned", dev.serial),
