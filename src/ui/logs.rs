@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::helpers::logcat_line_color;
+use super::helpers::{export_single_file, logcat_line_color};
 use super::AppLogLevel;
 use crate::adb::{self, AdbMsg};
 use crate::device::{self, LogSource, LEVEL_NAMES, LOG_PAGE_SIZE};
@@ -291,6 +291,16 @@ impl super::App {
                 }
             }
 
+            if ui.button("Export").clicked() {
+                if let Some(ds) = self.devices.get(serial) {
+                    let content = ds.logcat_lines.join("\n");
+                    let fname = format!("logcat_{serial}.txt");
+                    if let Err(e) = export_single_file(&fname, &content) {
+                        self.log(AppLogLevel::Error, format!("[{serial}] Export failed: {e}"));
+                    }
+                }
+            }
+
             ui.separator();
 
             if let Some(ds) = self.devices.get_mut(&serial_owned) {
@@ -473,6 +483,18 @@ impl super::App {
             if ui.button("Clear").clicked() {
                 if let Some(ds) = self.devices.get_mut(&serial_owned) {
                     ds.log_buffers.remove(&source);
+                }
+            }
+
+            if ui.button("Export").clicked() {
+                if let Some(ds) = self.devices.get(serial) {
+                    if let Some(lines) = ds.log_buffers.get(&source) {
+                        let content = lines.join("\n");
+                        let fname = format!("{}_{serial}.txt", source.label().replace(' ', "_"));
+                        if let Err(e) = export_single_file(&fname, &content) {
+                            self.log(AppLogLevel::Error, format!("[{serial}] Export failed: {e}"));
+                        }
+                    }
                 }
             }
 
