@@ -312,9 +312,9 @@ pub enum AdbMsg {
     CrashLogcat(String, Result<String, String>),
     /// Pull logs to folder result: (serial, `Ok(count)` or `Err(msg)`).
     PullLogsResult(String, Result<usize, String>),
-    /// Screen mirror stopped: (serial, mirror_session, reason).
+    /// Screen mirror stopped: (serial, `mirror_session`, reason).
     MirrorStopped(String, u64, String),
-    /// Screen mirror: device display resolution resolved (serial, mirror_session, width, height).
+    /// Screen mirror: device display resolution resolved (serial, `mirror_session`, width, height).
     MirrorDisplaySize(String, u64, u32, u32),
     /// Mirror server management result: (serial, installed, running, message).
     MirrorServerStatus(String, Option<bool>, Option<bool>, String),

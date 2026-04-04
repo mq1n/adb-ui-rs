@@ -5,6 +5,7 @@ use eframe::egui;
 
 use crate::adb;
 use crate::adb::mirror::MirrorMode;
+use crate::device::DeviceState;
 
 impl super::App {
     pub(super) fn draw_mirror_tab(&mut self, ui: &mut egui::Ui, serial: &str) {
@@ -310,7 +311,7 @@ impl super::App {
         }
     }
 
-    fn draw_mirror_nav_bar(&mut self, ui: &mut egui::Ui, serial: &str, nav_rect: egui::Rect) {
+    fn draw_mirror_nav_bar(&self, ui: &mut egui::Ui, serial: &str, nav_rect: egui::Rect) {
         let mut nav_ui = ui.new_child(egui::UiBuilder::new().max_rect(nav_rect));
         nav_ui.set_clip_rect(nav_rect);
 
@@ -470,7 +471,7 @@ impl super::App {
         let serial = serial.to_string();
         std::thread::spawn(move || {
             let action_result = adb::mirror::push_server(&serial, &path.display().to_string())
-                .map(|_| "Server installed".to_string())
+                .map(|()| "Server installed".to_string())
                 .map_err(|error| format!("Install failed: {error}"));
             let (installed, running, msg) = refresh_server_status_message(&serial, action_result);
             let _ = tx.send(adb::AdbMsg::MirrorServerStatus(
@@ -490,7 +491,7 @@ impl super::App {
         std::thread::spawn(move || {
             let _ = adb::mirror::kill_server(&serial);
             let action_result = adb::mirror::remove_server(&serial)
-                .map(|_| "Server removed".to_string())
+                .map(|()| "Server removed".to_string())
                 .map_err(|error| format!("Remove failed: {error}"));
             let (installed, running, msg) = refresh_server_status_message(&serial, action_result);
             let _ = tx.send(adb::AdbMsg::MirrorServerStatus(
@@ -510,7 +511,7 @@ impl super::App {
         std::thread::spawn(move || {
             let action_result = match adb::mirror::build_server() {
                 Ok(jar_path) => adb::mirror::push_server(&serial, &jar_path.display().to_string())
-                    .map(|_| format!("Built & installed from {}", jar_path.display()))
+                    .map(|()| format!("Built & installed from {}", jar_path.display()))
                     .map_err(|error| format!("Build succeeded but install failed: {error}")),
                 Err(error) => Err(format!("Build failed: {error}")),
             };
@@ -554,11 +555,11 @@ impl super::App {
             .get(serial)
             .map(|ds| ds.mirror_config.clone())
             .unwrap_or_default();
-        let mode = self.resolve_mirror_mode(serial);
+        let mode = Self::resolve_mirror_mode(serial);
         let Some(session) = self
             .devices
             .get_mut(serial)
-            .map(|ds| ds.start_next_mirror_session())
+            .map(DeviceState::start_next_mirror_session)
         else {
             return;
         };
@@ -599,7 +600,7 @@ impl super::App {
         self.log_mirror_info(serial, "Stopped");
     }
 
-    fn resolve_mirror_mode(&self, serial: &str) -> MirrorMode {
+    const fn resolve_mirror_mode(serial: &str) -> MirrorMode {
         let _ = serial;
         MirrorMode::Server
     }

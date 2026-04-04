@@ -821,34 +821,30 @@ fn worker_server(
 }
 
 fn ensure_server_installed(serial: &str, tx: &Sender<AdbMsg>) -> Result<(), String> {
-    match is_server_installed(serial)? {
-        true => {
-            send_mirror_log(
-                tx,
-                serial,
-                AdbLogLevel::Info,
-                "Mirror server already installed",
-            );
-            Ok(())
-        }
-        false => {
-            send_mirror_log(
-                tx,
-                serial,
-                AdbLogLevel::Warn,
-                "Mirror server missing; building and installing embedded server",
-            );
-            let jar_path = build_server()?;
-            push_server(serial, &jar_path.display().to_string())?;
-            send_mirror_log(
-                tx,
-                serial,
-                AdbLogLevel::Info,
-                "Embedded mirror server installed",
-            );
-            Ok(())
-        }
+    if is_server_installed(serial)? {
+        send_mirror_log(
+            tx,
+            serial,
+            AdbLogLevel::Info,
+            "Mirror server already installed",
+        );
+    } else {
+        send_mirror_log(
+            tx,
+            serial,
+            AdbLogLevel::Warn,
+            "Mirror server missing; building and installing embedded server",
+        );
+        let jar_path = build_server()?;
+        push_server(serial, &jar_path.display().to_string())?;
+        send_mirror_log(
+            tx,
+            serial,
+            AdbLogLevel::Info,
+            "Embedded mirror server installed",
+        );
     }
+    Ok(())
 }
 
 fn run_server_transport(
@@ -1038,9 +1034,9 @@ fn establish_server_channels(
             control_listener,
             ..
         } => {
-            let video_stream = accept_listener(video_listener, stop, "video reverse connection")?;
+            let video_stream = accept_listener(&video_listener, stop, "video reverse connection")?;
             let control_stream =
-                accept_listener(control_listener, stop, "control reverse connection")?;
+                accept_listener(&control_listener, stop, "control reverse connection")?;
             Ok((video_stream, control_stream))
         }
         ServerTransport::Forward {
@@ -1056,7 +1052,7 @@ fn establish_server_channels(
 }
 
 fn accept_listener(
-    listener: TcpListener,
+    listener: &TcpListener,
     stop: &AtomicBool,
     description: &str,
 ) -> Result<TcpStream, String> {
@@ -1620,7 +1616,17 @@ fn resolve_video_size(
     let height_ratio = f64::from(max_height.max(MIN_VIDEO_EDGE)) / f64::from(display_height);
     let scale = width_ratio.min(height_ratio).min(1.0);
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scale is clamped to 0..=1, so result is always non-negative and fits u32"
+    )]
     let scaled_width = (f64::from(display_width) * scale).floor() as u32;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "scale is clamped to 0..=1, so result is always non-negative and fits u32"
+    )]
     let scaled_height = (f64::from(display_height) * scale).floor() as u32;
 
     (
@@ -1715,8 +1721,9 @@ fn spawn_server_log_reader<R>(
                 let overflow = guard.len() - MAX_SERVER_LOG_LINES;
                 guard.drain(..overflow);
             }
+            drop(guard);
 
-            let message = format!("[server] {}", trimmed);
+            let message = format!("[server] {trimmed}");
             let level = classify_server_log_level(trimmed);
             let _ = tx.send(AdbMsg::MirrorLog(serial.clone(), level, message));
         }
@@ -1747,9 +1754,12 @@ fn append_server_logs(message: String, logs: &Arc<Mutex<Vec<String>>>) -> String
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.is_empty() {
+        drop(guard);
         message
     } else {
-        format!("{message}. Server log: {}", guard.join(" | "))
+        let suffix = guard.join(" | ");
+        drop(guard);
+        format!("{message}. Server log: {suffix}")
     }
 }
 

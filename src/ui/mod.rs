@@ -65,6 +65,10 @@ impl AppLogLevel {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "UI toggle flags are naturally booleans"
+)]
 pub struct App {
     pub rx: Receiver<AdbMsg>,
     pub tx: Sender<AdbMsg>,
@@ -1487,7 +1491,7 @@ impl App {
                                 if adb::is_tcp_device(serial)
                                     && ui.small_button("Disconnect").clicked()
                                 {
-                                    let addr = serial.to_string();
+                                    let addr = serial.clone();
                                     let tx = self.tx.clone();
                                     std::thread::spawn(move || {
                                         let (_, msg) = adb::adb_disconnect(&addr);
@@ -1498,7 +1502,7 @@ impl App {
                                     });
                                 }
                                 if is_emu && ui.small_button("Kill").clicked() {
-                                    let es = serial.to_string();
+                                    let es = serial.clone();
                                     let tx = self.tx.clone();
                                     std::thread::spawn(move || {
                                         let (ok, msg) = adb::kill_emulator(&es);

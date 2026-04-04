@@ -27,7 +27,7 @@ impl egui::TextBuffer for ReadOnlyText {
 /// Build a `LayoutJob` that colours each line according to `logcat_line_color`.
 fn colored_log_layout(
     text: &str,
-    font_id: egui::FontId,
+    font_id: &egui::FontId,
     default_color: egui::Color32,
     color_fn: fn(&str) -> egui::Color32,
 ) -> egui::text::LayoutJob {
@@ -399,12 +399,8 @@ impl super::App {
             let font_id = egui::FontId::monospace(12.0);
             let default_color = egui::Color32::from_rgb(200, 200, 200);
             let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
-                let mut job = colored_log_layout(
-                    text.as_str(),
-                    font_id.clone(),
-                    default_color,
-                    logcat_line_color,
-                );
+                let mut job =
+                    colored_log_layout(text.as_str(), &font_id, default_color, logcat_line_color);
                 job.wrap.max_width = wrap_width;
                 ui.painter().layout_job(job)
             };
@@ -582,7 +578,7 @@ impl super::App {
                 let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
                     let mut job = colored_log_layout(
                         text.as_str(),
-                        font_id.clone(),
+                        &font_id,
                         default_color,
                         logcat_line_color,
                     );
