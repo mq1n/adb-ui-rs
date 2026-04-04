@@ -80,6 +80,7 @@ pub struct App {
     pub config: AppConfig,
     pub config_path: PathBuf,
     pub show_settings: bool,
+    pub show_devices: bool,
     pub bundle_id_input: String,
     pub log_tags_input: String,
     pub activity_class_input: String,
@@ -160,6 +161,7 @@ impl App {
             config,
             config_path,
             show_settings: false,
+            show_devices: false,
             bundle_id_input,
             log_tags_input,
             activity_class_input,
@@ -1153,119 +1155,145 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // Top bar.
+        // Top bar: action row + device tabs.
         egui::Panel::top("top_bar").show_inside(ui, |ui| {
+            // Row 1: status + action buttons.
             ui.horizontal(|ui| {
                 ui.label(&self.status);
-                ui.separator();
 
-                // Device tabs inline.
-                let order = self.device_order.clone();
-                let mut close_serial: Option<String> = None;
-                for serial in &order {
-                    if let Some(ds) = self.devices.get(serial) {
-                        let label = ds.label();
-                        let selected = self.active_device.as_ref() == Some(serial);
-                        let color = if ds.info.state == "device" {
-                            egui::Color32::from_rgb(100, 200, 100)
-                        } else {
-                            egui::Color32::from_rgb(200, 100, 100)
-                        };
-
-                        // Measure tab content size.
-                        let font = egui::FontId::default();
-                        let label_galley =
-                            ui.painter()
-                                .layout_no_wrap(label.clone(), font.clone(), color);
-                        let label_w = label_galley.size().x;
-                        let x_w = 14.0;
-                        let padding_x = 8.0;
-                        let padding_y = 4.0;
-                        let tab_w = label_w + x_w + padding_x * 2.0 + 4.0;
-                        let tab_h = label_galley.size().y + padding_y * 2.0;
-
-                        let (tab_rect, tab_response) =
-                            ui.allocate_exact_size(egui::vec2(tab_w, tab_h), egui::Sense::click());
-
-                        // Background.
-                        if selected {
-                            ui.painter().rect_filled(
-                                tab_rect,
-                                3.0,
-                                egui::Color32::from_rgb(50, 50, 60),
-                            );
-                        } else if tab_response.hovered() {
-                            ui.painter().rect_filled(
-                                tab_rect,
-                                3.0,
-                                egui::Color32::from_rgb(40, 40, 45),
-                            );
-                        }
-
-                        // Label text.
-                        ui.painter().galley(
-                            egui::pos2(tab_rect.min.x + padding_x, tab_rect.min.y + padding_y),
-                            label_galley,
-                            color,
-                        );
-
-                        // X button area (right side of tab).
-                        let x_rect = egui::Rect::from_min_size(
-                            egui::pos2(tab_rect.max.x - padding_x - x_w, tab_rect.min.y),
-                            egui::vec2(x_w + padding_x, tab_h),
-                        );
-                        let x_resp = ui.allocate_rect(x_rect, egui::Sense::click());
-                        let x_color = if x_resp.hovered() {
-                            egui::Color32::from_rgb(255, 100, 100)
-                        } else {
-                            egui::Color32::from_rgb(140, 140, 140)
-                        };
-                        ui.painter().text(
-                            x_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "x",
-                            egui::FontId::proportional(11.0),
-                            x_color,
-                        );
-
-                        // Left click on tab = select.
-                        if tab_response.clicked() {
-                            self.active_device = Some(serial.clone());
-                        }
-
-                        // Middle click on tab OR click X = close.
-                        if tab_response.middle_clicked() || x_resp.clicked() {
-                            close_serial = Some(serial.clone());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let settings_label = if self.show_settings {
+                        "Close Settings"
+                    } else {
+                        "Settings"
+                    };
+                    if ui.button(settings_label).clicked() {
+                        self.show_settings = !self.show_settings;
+                        if self.show_settings {
+                            self.bundle_id_input.clone_from(&self.config.bundle_id);
+                            self.activity_class_input
+                                .clone_from(&self.config.activity_class);
+                            self.log_tags_input = self.config.logcat_tags.join("\n");
                         }
                     }
-                }
 
-                // Process close outside the loop.
-                if let Some(serial) = close_serial {
-                    self.close_device_tab(&serial);
-                }
-
-                ui.separator();
-                if ui.button("Refresh Devices").clicked() {
-                    self.fatal_error = None;
-                    self.last_device_poll = 0.0;
-                    self.hidden_devices.clear(); // un-hide all closed tabs
-                }
-                let settings_label = if self.show_settings {
-                    "Close Settings"
-                } else {
-                    "Settings"
-                };
-                if ui.button(settings_label).clicked() {
-                    self.show_settings = !self.show_settings;
-                    if self.show_settings {
-                        self.bundle_id_input.clone_from(&self.config.bundle_id);
-                        self.activity_class_input
-                            .clone_from(&self.config.activity_class);
-                        self.log_tags_input = self.config.logcat_tags.join("\n");
+                    let devices_label = if self.show_devices {
+                        "Close Devices"
+                    } else {
+                        "Devices"
+                    };
+                    if ui.button(devices_label).clicked() {
+                        self.show_devices = !self.show_devices;
+                        if self.show_devices && self.available_avds.is_empty() && !self.avds_loading
+                        {
+                            self.avds_loading = true;
+                            let tx = self.tx.clone();
+                            std::thread::spawn(move || {
+                                let avds = adb::list_avds();
+                                let _ = tx.send(AdbMsg::AvdList(avds));
+                            });
+                        }
                     }
-                }
+
+                    if ui.button("Refresh Devices").clicked() {
+                        self.fatal_error = None;
+                        self.last_device_poll = 0.0;
+                        self.hidden_devices.clear();
+                    }
+                });
             });
+
+            // Row 2: device tabs.
+            if !self.device_order.is_empty() {
+                ui.horizontal(|ui| {
+                    let order = self.device_order.clone();
+                    let mut close_serial: Option<String> = None;
+                    for serial in &order {
+                        if let Some(ds) = self.devices.get(serial) {
+                            let label = ds.label();
+                            let selected = self.active_device.as_ref() == Some(serial);
+                            let color = if ds.info.state == "device" {
+                                egui::Color32::from_rgb(100, 200, 100)
+                            } else {
+                                egui::Color32::from_rgb(200, 100, 100)
+                            };
+
+                            // Measure tab content size.
+                            let font = egui::FontId::default();
+                            let label_galley =
+                                ui.painter()
+                                    .layout_no_wrap(label.clone(), font.clone(), color);
+                            let label_w = label_galley.size().x;
+                            let x_w = 14.0;
+                            let padding_x = 8.0;
+                            let padding_y = 4.0;
+                            let tab_w = label_w + x_w + padding_x * 2.0 + 4.0;
+                            let tab_h = label_galley.size().y + padding_y * 2.0;
+
+                            let (tab_rect, tab_response) = ui.allocate_exact_size(
+                                egui::vec2(tab_w, tab_h),
+                                egui::Sense::click(),
+                            );
+
+                            // Background.
+                            if selected {
+                                ui.painter().rect_filled(
+                                    tab_rect,
+                                    3.0,
+                                    egui::Color32::from_rgb(50, 50, 60),
+                                );
+                            } else if tab_response.hovered() {
+                                ui.painter().rect_filled(
+                                    tab_rect,
+                                    3.0,
+                                    egui::Color32::from_rgb(40, 40, 45),
+                                );
+                            }
+
+                            // Label text.
+                            ui.painter().galley(
+                                egui::pos2(tab_rect.min.x + padding_x, tab_rect.min.y + padding_y),
+                                label_galley,
+                                color,
+                            );
+
+                            // X button area (right side of tab).
+                            let x_rect = egui::Rect::from_min_size(
+                                egui::pos2(tab_rect.max.x - padding_x - x_w, tab_rect.min.y),
+                                egui::vec2(x_w + padding_x, tab_h),
+                            );
+                            let x_resp = ui.allocate_rect(x_rect, egui::Sense::click());
+                            let x_color = if x_resp.hovered() {
+                                egui::Color32::from_rgb(255, 100, 100)
+                            } else {
+                                egui::Color32::from_rgb(140, 140, 140)
+                            };
+                            ui.painter().text(
+                                x_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "x",
+                                egui::FontId::proportional(11.0),
+                                x_color,
+                            );
+
+                            // Left click on tab = select.
+                            if tab_response.clicked() {
+                                self.active_device = Some(serial.clone());
+                            }
+
+                            // Middle click on tab OR click X = close.
+                            if tab_response.middle_clicked() || x_resp.clicked() {
+                                close_serial = Some(serial.clone());
+                            }
+                        }
+                    }
+
+                    // Process close outside the loop.
+                    if let Some(serial) = close_serial {
+                        self.close_device_tab(&serial);
+                    }
+                });
+            }
         });
 
         // Settings panel (right side).
@@ -1274,6 +1302,15 @@ impl eframe::App for App {
                 .default_size(350.0)
                 .show_inside(ui, |ui| {
                     self.draw_settings(ui);
+                });
+        }
+
+        // Devices panel (left side).
+        if self.show_devices {
+            egui::Panel::left("devices_panel")
+                .default_size(380.0)
+                .show_inside(ui, |ui| {
+                    self.draw_devices_panel(ui);
                 });
         }
 
@@ -1302,6 +1339,368 @@ impl Drop for App {
 }
 
 impl App {
+    // ─── Devices panel (sidebar) ─────────────────────────────────────────────
+
+    fn draw_devices_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Devices");
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .id_salt("devices_panel_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // ── Connect ──────────────────────────────────────
+                ui.label(egui::RichText::new("Connect").strong());
+                ui.add_space(2.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("WiFi/TCP:");
+                    ui.add_sized(
+                        [160.0, 18.0],
+                        egui::TextEdit::singleline(&mut self.wifi_connect_addr)
+                            .hint_text("192.168.1.x:5555"),
+                    );
+                    if ui.button("Connect").clicked() && !self.wifi_connect_addr.is_empty() {
+                        let addr = self.wifi_connect_addr.clone();
+                        let tx = self.tx.clone();
+                        self.log(AppLogLevel::Info, format!("Connecting to {addr}..."));
+                        std::thread::spawn(move || {
+                            let (ok, msg) = adb::adb_connect(&addr);
+                            let _ = tx
+                                .send(AdbMsg::DeviceActionResult(addr, format!("Connect: {msg}")));
+                            let _ = ok;
+                        });
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("WSA Port:");
+                    ui.add_sized(
+                        [50.0, 18.0],
+                        egui::TextEdit::singleline(&mut self.wsa_port).hint_text("58526"),
+                    );
+                    if ui.button("Connect WSA").clicked() {
+                        let addr = format!("127.0.0.1:{}", self.wsa_port.trim());
+                        let tx = self.tx.clone();
+                        self.log(AppLogLevel::Info, format!("Connecting to WSA ({addr})..."));
+                        std::thread::spawn(move || {
+                            let (ok, msg) = adb::adb_connect(&addr);
+                            let status = if ok {
+                                "WSA connected"
+                            } else {
+                                "WSA connect failed"
+                            };
+                            let _ = tx
+                                .send(AdbMsg::DeviceActionResult(addr, format!("{status}: {msg}")));
+                        });
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    if ui.button("WSA Settings").clicked() && !adb::open_wsa_settings() {
+                        self.log(
+                            AppLogLevel::Error,
+                            "Failed to open WSA Settings - is WSA installed?",
+                        );
+                    }
+                    if ui.button("Launch WSA").clicked() && !adb::launch_wsa() {
+                        self.log(AppLogLevel::Error, "Failed to launch WSA");
+                    }
+                    if ui.button("Disconnect All TCP").clicked() {
+                        let tx = self.tx.clone();
+                        std::thread::spawn(move || {
+                            let (_, msg) = adb::adb_disconnect_all();
+                            let _ = tx.send(AdbMsg::DeviceActionResult(
+                                "all".into(),
+                                format!("Disconnect all: {msg}"),
+                            ));
+                        });
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                // Wireless pairing.
+                ui.horizontal(|ui| {
+                    ui.label("Pair:");
+                    ui.add_sized(
+                        [120.0, 18.0],
+                        egui::TextEdit::singleline(&mut self.pair_address_input)
+                            .hint_text("host:port"),
+                    );
+                    ui.add_sized(
+                        [70.0, 18.0],
+                        egui::TextEdit::singleline(&mut self.pair_code_input).hint_text("code"),
+                    );
+                    let can_pair = !self.pair_address_input.trim().is_empty()
+                        && !self.pair_code_input.trim().is_empty();
+                    if ui
+                        .add_enabled(can_pair, egui::Button::new("Pair"))
+                        .clicked()
+                    {
+                        let addr = self.pair_address_input.trim().to_string();
+                        let code = self.pair_code_input.trim().to_string();
+                        let tx = self.tx.clone();
+                        self.log(AppLogLevel::Info, format!("Pairing with {addr}..."));
+                        std::thread::spawn(move || {
+                            let (ok, msg) = adb::adb_pair(&addr, &code);
+                            let s = if ok { "Paired" } else { "Pair failed" };
+                            let _ =
+                                tx.send(AdbMsg::DeviceActionResult(addr, format!("{s}: {msg}")));
+                        });
+                    }
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Connected Devices ────────────────────────────
+                ui.label(egui::RichText::new("Connected Devices").strong());
+                ui.add_space(2.0);
+
+                if self.device_order.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(140, 140, 140),
+                        "No devices connected.",
+                    );
+                } else {
+                    let order = self.device_order.clone();
+                    for serial in &order {
+                        if let Some(ds) = self.devices.get(serial) {
+                            let is_emu = adb::is_emulator_serial(serial);
+                            let state_color = if ds.info.state == "device" {
+                                egui::Color32::from_rgb(100, 200, 100)
+                            } else {
+                                egui::Color32::from_rgb(200, 100, 100)
+                            };
+                            ui.horizontal(|ui| {
+                                ui.colored_label(state_color, &ds.info.state);
+                                ui.label(egui::RichText::new(&ds.info.model).monospace().small());
+                                ui.colored_label(egui::Color32::from_rgb(120, 120, 120), serial);
+                                if is_emu {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(180, 130, 255),
+                                        "[emu]",
+                                    );
+                                }
+                                if adb::is_tcp_device(serial)
+                                    && ui.small_button("Disconnect").clicked()
+                                {
+                                    let addr = serial.to_string();
+                                    let tx = self.tx.clone();
+                                    std::thread::spawn(move || {
+                                        let (_, msg) = adb::adb_disconnect(&addr);
+                                        let _ = tx.send(AdbMsg::DeviceActionResult(
+                                            addr,
+                                            format!("Disconnect: {msg}"),
+                                        ));
+                                    });
+                                }
+                                if is_emu && ui.small_button("Kill").clicked() {
+                                    let es = serial.to_string();
+                                    let tx = self.tx.clone();
+                                    std::thread::spawn(move || {
+                                        let (ok, msg) = adb::kill_emulator(&es);
+                                        let s = if ok { "Killed" } else { "Kill failed" };
+                                        let _ = tx.send(AdbMsg::DeviceActionResult(
+                                            es,
+                                            format!("{s}: {msg}"),
+                                        ));
+                                    });
+                                }
+                            });
+                        }
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // ── Emulator Management ──────────────────────────
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Emulators (AVDs)").strong());
+                    if ui.small_button("Refresh").clicked() {
+                        self.avds_loading = true;
+                        let tx = self.tx.clone();
+                        std::thread::spawn(move || {
+                            let avds = adb::list_avds();
+                            let _ = tx.send(AdbMsg::AvdList(avds));
+                        });
+                    }
+                    if self.avds_loading {
+                        ui.spinner();
+                    }
+                });
+                ui.add_space(2.0);
+
+                if !self.available_avds.is_empty() {
+                    for avd in self.available_avds.clone() {
+                        let is_running = self.running_emu_map.values().any(|name| name == &avd);
+                        ui.horizontal(|ui| {
+                            let status_color = if is_running {
+                                egui::Color32::from_rgb(100, 200, 100)
+                            } else {
+                                egui::Color32::from_rgb(160, 160, 160)
+                            };
+                            ui.colored_label(status_color, if is_running { "ON " } else { "OFF" });
+                            ui.label(egui::RichText::new(&avd).monospace());
+
+                            if !is_running {
+                                if ui.small_button("Start").clicked() {
+                                    let avd = avd.clone();
+                                    let tx = self.tx.clone();
+                                    self.log(
+                                        AppLogLevel::Info,
+                                        format!("Starting emulator: {avd}"),
+                                    );
+                                    std::thread::spawn(move || {
+                                        let (ok, msg) = adb::start_emulator(&avd, false);
+                                        let s = if ok { "OK" } else { "FAILED" };
+                                        let _ = tx.send(AdbMsg::DeviceActionResult(
+                                            "emulator".into(),
+                                            format!("Start {avd}: {s} - {msg}"),
+                                        ));
+                                    });
+                                }
+                                if ui
+                                    .small_button("Cold Boot")
+                                    .on_hover_text("Start without snapshot")
+                                    .clicked()
+                                {
+                                    let avd = avd.clone();
+                                    let tx = self.tx.clone();
+                                    self.log(
+                                        AppLogLevel::Info,
+                                        format!("Cold-booting emulator: {avd}"),
+                                    );
+                                    std::thread::spawn(move || {
+                                        let (ok, msg) = adb::start_emulator(&avd, true);
+                                        let s = if ok { "OK" } else { "FAILED" };
+                                        let _ = tx.send(AdbMsg::DeviceActionResult(
+                                            "emulator".into(),
+                                            format!("Cold boot {avd}: {s} - {msg}"),
+                                        ));
+                                    });
+                                }
+                            } else if ui.small_button("Kill").clicked() {
+                                let emu_serial = self
+                                    .running_emu_map
+                                    .iter()
+                                    .find(|(_, name)| name.as_str() == avd.as_str())
+                                    .map(|(serial, _)| serial.clone());
+                                if let Some(es) = emu_serial {
+                                    let tx = self.tx.clone();
+                                    std::thread::spawn(move || {
+                                        let (ok, msg) = adb::kill_emulator(&es);
+                                        let s = if ok { "Killed" } else { "Kill failed" };
+                                        let _ = tx.send(AdbMsg::DeviceActionResult(
+                                            es,
+                                            format!("{s}: {msg}"),
+                                        ));
+                                    });
+                                }
+                            }
+
+                            if !is_running && ui.small_button("Delete").clicked() {
+                                let avd = avd.clone();
+                                let tx = self.tx.clone();
+                                self.log(AppLogLevel::Warn, format!("Deleting AVD: {avd}"));
+                                std::thread::spawn(move || {
+                                    let (ok, msg) = adb::delete_avd(&avd);
+                                    let s = if ok { "Deleted" } else { "Delete failed" };
+                                    let _ = tx.send(AdbMsg::DeviceActionResult(
+                                        "emulator".into(),
+                                        format!("AVD {avd}: {s} - {msg}"),
+                                    ));
+                                    let avds = adb::list_avds();
+                                    let _ = tx.send(AdbMsg::AvdList(avds));
+                                });
+                            }
+                        });
+                    }
+                } else if !self.avds_loading {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(140, 140, 140),
+                        "No AVDs found. Click Refresh.",
+                    );
+                }
+
+                ui.add_space(8.0);
+
+                // Create AVD form.
+                ui.label(egui::RichText::new("Create AVD").strong());
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.add_sized(
+                        [100.0, 18.0],
+                        egui::TextEdit::singleline(&mut self.new_avd_name).hint_text("my_avd"),
+                    );
+                    ui.label("Device:");
+                    ui.add_sized(
+                        [80.0, 18.0],
+                        egui::TextEdit::singleline(&mut self.new_avd_device).hint_text("pixel_6"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Image:");
+                    if self.available_system_images.is_empty() {
+                        ui.add_sized(
+                            [200.0, 18.0],
+                            egui::TextEdit::singleline(&mut self.new_avd_image)
+                                .hint_text("system-images;android-34;..."),
+                        );
+                        if ui.small_button("Scan Images").clicked() {
+                            let tx = self.tx.clone();
+                            std::thread::spawn(move || {
+                                let images = adb::list_system_images();
+                                let _ = tx.send(AdbMsg::SystemImageList(images));
+                            });
+                        }
+                    } else {
+                        egui::ComboBox::from_id_salt("devpanel_avd_image")
+                            .selected_text(if self.new_avd_image.is_empty() {
+                                "Select image..."
+                            } else {
+                                &self.new_avd_image
+                            })
+                            .width(280.0)
+                            .show_ui(ui, |ui| {
+                                for img in self.available_system_images.clone() {
+                                    ui.selectable_value(&mut self.new_avd_image, img.clone(), &img);
+                                }
+                            });
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let can_create = !self.new_avd_name.trim().is_empty()
+                        && !self.new_avd_image.trim().is_empty();
+                    if ui
+                        .add_enabled(can_create, egui::Button::new("Create AVD"))
+                        .clicked()
+                    {
+                        let name = self.new_avd_name.trim().to_string();
+                        let image = self.new_avd_image.trim().to_string();
+                        let device = self.new_avd_device.trim().to_string();
+                        let tx = self.tx.clone();
+                        self.log(AppLogLevel::Info, format!("Creating AVD: {name} ({image})"));
+                        std::thread::spawn(move || {
+                            let (ok, msg) = adb::create_avd(&name, &image, &device);
+                            let s = if ok { "Created" } else { "Create failed" };
+                            let _ = tx.send(AdbMsg::DeviceActionResult(
+                                "emulator".into(),
+                                format!("AVD {name}: {s} - {msg}"),
+                            ));
+                            let avds = adb::list_avds();
+                            let _ = tx.send(AdbMsg::AvdList(avds));
+                        });
+                    }
+                });
+            });
+    }
+
     // ─── Device panel ────────────────────────────────────────────────────────
 
     fn draw_device_panel(&mut self, ui: &mut egui::Ui, serial: &str) {

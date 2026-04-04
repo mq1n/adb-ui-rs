@@ -5,6 +5,60 @@ use super::AppLogLevel;
 use crate::adb::{self, AdbMsg};
 use crate::device::{self, LogSource, LEVEL_NAMES, LOG_PAGE_SIZE};
 
+/// Read-only wrapper around a `String` so `TextEdit` allows selection but not editing.
+struct ReadOnlyText(String);
+
+impl egui::TextBuffer for ReadOnlyText {
+    fn is_mutable(&self) -> bool {
+        false
+    }
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+    fn insert_text(&mut self, _text: &str, _char_index: usize) -> usize {
+        0
+    }
+    fn delete_char_range(&mut self, _char_range: std::ops::Range<usize>) {}
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<Self>()
+    }
+}
+
+/// Build a `LayoutJob` that colours each line according to `logcat_line_color`.
+fn colored_log_layout(
+    text: &str,
+    font_id: egui::FontId,
+    default_color: egui::Color32,
+    color_fn: fn(&str) -> egui::Color32,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob {
+        text: text.to_owned(),
+        break_on_newline: true,
+        ..Default::default()
+    };
+    let mut byte_offset = 0usize;
+    for line in text.split('\n') {
+        let end = byte_offset + line.len();
+        let color = if line.is_empty() {
+            default_color
+        } else {
+            color_fn(line)
+        };
+        job.sections.push(egui::text::LayoutSection {
+            leading_space: 0.0,
+            byte_range: byte_offset..end,
+            format: egui::TextFormat {
+                font_id: font_id.clone(),
+                color,
+                ..Default::default()
+            },
+        });
+        // +1 for the '\n' separator (except after the last line).
+        byte_offset = end + 1;
+    }
+    job
+}
+
 impl super::App {
     pub(super) fn draw_logs_tab(&mut self, ui: &mut egui::Ui, serial: &str) {
         let serial_owned = serial.to_string();
@@ -327,28 +381,45 @@ impl super::App {
         if let Some(ds) = self.devices.get(serial) {
             let len = ds.logcat_lines.len();
             let page_lines = &ds.logcat_lines[page_start.min(len)..page_end.min(len)];
+
+            // Build a single filtered string for selectable display.
+            let filtered: String = page_lines
+                .iter()
+                .filter(|line| {
+                    device::line_passes_level(line, level)
+                        && device::line_passes_tag(line, &tag_filter)
+                        && device::line_passes_pid(line, &pid_filter)
+                        && (filter_lower.is_empty() || line.to_lowercase().contains(&filter_lower))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let mut buf = ReadOnlyText(filtered);
+            let font_id = egui::FontId::monospace(12.0);
+            let default_color = egui::Color32::from_rgb(200, 200, 200);
+            let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                let mut job = colored_log_layout(
+                    text.as_str(),
+                    font_id.clone(),
+                    default_color,
+                    logcat_line_color,
+                );
+                job.wrap.max_width = wrap_width;
+                ui.painter().layout_job(job)
+            };
+
             egui::ScrollArea::vertical()
                 .stick_to_bottom(auto_scroll)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
-                    for line in page_lines {
-                        if !device::line_passes_level(line, level) {
-                            continue;
-                        }
-                        if !device::line_passes_tag(line, &tag_filter) {
-                            continue;
-                        }
-                        if !device::line_passes_pid(line, &pid_filter) {
-                            continue;
-                        }
-                        if !filter_lower.is_empty() && !line.to_lowercase().contains(&filter_lower)
-                        {
-                            continue;
-                        }
-                        let color = logcat_line_color(line);
-                        ui.label(egui::RichText::new(line).color(color));
-                    }
+                    ui.add(
+                        egui::TextEdit::multiline(&mut buf)
+                            .font(egui::TextStyle::Monospace)
+                            .desired_width(f32::INFINITY)
+                            .layouter(&mut layouter)
+                            .frame(egui::Frame::NONE),
+                    );
                 });
         }
     }
@@ -490,25 +561,45 @@ impl super::App {
             if let Some(lines) = ds.log_buffers.get(&source) {
                 let len = lines.len();
                 let page_lines = &lines[page_start.min(len)..page_end.min(len)];
+
+                // Build a single filtered string (reversed) for selectable display.
+                let filtered: String = page_lines
+                    .iter()
+                    .rev()
+                    .filter(|line| {
+                        device::line_passes_tag(line, &tag_filter)
+                            && device::line_passes_pid(line, &pid_filter)
+                            && (filter_lower.is_empty()
+                                || line.to_lowercase().contains(&filter_lower))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                let mut buf = ReadOnlyText(filtered);
+                let font_id = egui::FontId::monospace(12.0);
+                let default_color = egui::Color32::from_rgb(200, 200, 200);
+                let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                    let mut job = colored_log_layout(
+                        text.as_str(),
+                        font_id.clone(),
+                        default_color,
+                        logcat_line_color,
+                    );
+                    job.wrap.max_width = wrap_width;
+                    ui.painter().layout_job(job)
+                };
+
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
-                        for line in page_lines.iter().rev() {
-                            if !device::line_passes_tag(line, &tag_filter) {
-                                continue;
-                            }
-                            if !device::line_passes_pid(line, &pid_filter) {
-                                continue;
-                            }
-                            if !filter_lower.is_empty()
-                                && !line.to_lowercase().contains(&filter_lower)
-                            {
-                                continue;
-                            }
-                            let color = logcat_line_color(line);
-                            ui.label(egui::RichText::new(line).color(color));
-                        }
+                        ui.add(
+                            egui::TextEdit::multiline(&mut buf)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .layouter(&mut layouter)
+                                .frame(egui::Frame::NONE),
+                        );
                     });
             }
         }
