@@ -124,6 +124,8 @@ pub struct App {
     pub available_system_images: Vec<String>,
     /// Cached running emulator serial -> AVD name (refreshed async, not in UI thread).
     pub running_emu_map: HashMap<String, String>,
+    /// Whether the App Log panel is visible.
+    pub show_app_log: bool,
 }
 
 impl App {
@@ -192,6 +194,7 @@ impl App {
             new_avd_device: "pixel_6".into(),
             available_system_images: Vec::new(),
             running_emu_map: HashMap::new(),
+            show_app_log: false,
         };
 
         for warning in config_warnings {
@@ -456,6 +459,9 @@ impl App {
                         AppLogLevel::Info
                     };
                     self.log(level, format!("[{serial}] {msg}"));
+                    if level == AppLogLevel::Error {
+                        self.show_app_log = true;
+                    }
                     if let Some(ds) = self.devices.get_mut(&serial) {
                         ds.push_action_log(format!("{} {msg}", now_str()));
                     }
@@ -1182,6 +1188,15 @@ impl eframe::App for App {
                         }
                     }
 
+                    let log_label = if self.show_app_log {
+                        "Close Log"
+                    } else {
+                        "App Log"
+                    };
+                    if ui.button(log_label).clicked() {
+                        self.show_app_log = !self.show_app_log;
+                    }
+
                     let devices_label = if self.show_devices {
                         "Close Devices"
                     } else {
@@ -1316,6 +1331,15 @@ impl eframe::App for App {
                 .default_size(380.0)
                 .show_inside(ui, |ui| {
                     self.draw_devices_panel(ui);
+                });
+        }
+
+        // App Log panel (bottom).
+        if self.show_app_log {
+            egui::Panel::bottom("app_log_panel")
+                .default_size(200.0)
+                .show_inside(ui, |ui| {
+                    self.draw_app_log_tab(ui);
                 });
         }
 
@@ -1763,11 +1787,6 @@ impl App {
                     ds.active_sub_tab = 9;
                 }
             }
-            if ui.selectable_label(active_sub == 10, "App Log").clicked() {
-                if let Some(ds) = self.devices.get_mut(&serial_owned) {
-                    ds.active_sub_tab = 10;
-                }
-            }
         });
         ui.separator();
 
@@ -1782,7 +1801,6 @@ impl App {
             7 => self.draw_monitor_tab(ui, &serial_owned),
             8 => self.draw_deploy_tab(ui, &serial_owned),
             9 => self.draw_mirror_tab(ui, &serial_owned),
-            10 => self.draw_app_log_tab(ui),
             _ => {}
         }
     }
