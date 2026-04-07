@@ -3,7 +3,10 @@ use std::process::{Command, Stdio};
 
 use super::device_mgmt::adb_shell;
 use super::devices::list_devices;
-use super::{adb_command, sdk_root_candidates, CommandExt, CREATE_NO_WINDOW};
+use super::{
+    adb_command, command_available, homebrew_tool_candidates, sdk_root_candidates, CommandExt,
+    CREATE_NO_WINDOW,
+};
 
 /// Find the Android SDK emulator binary.
 fn emulator_path() -> Option<PathBuf> {
@@ -29,6 +32,14 @@ fn emulator_path() -> Option<PathBuf> {
             return Some(PathBuf::from("emulator"));
         }
     }
+
+    // Homebrew on macOS installs emulator directly into its bin directory.
+    for candidate in homebrew_tool_candidates("emulator") {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
     None
 }
 
@@ -172,23 +183,47 @@ fn avdmanager_path() -> Option<PathBuf> {
         }
     }
 
+    // Check PATH.
+    if command_available("avdmanager", "list") {
+        return Some(PathBuf::from("avdmanager"));
+    }
+
+    // Homebrew on macOS.
+    for candidate in homebrew_tool_candidates("avdmanager") {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
     None
 }
 
 /// List available system images for AVD creation.
 pub fn list_system_images() -> Vec<String> {
     // Use sdkmanager to list installed system images.
-    let sdkmanager = sdk_root_candidates().into_iter().find_map(|sdk| {
-        let windows_path = sdk.join("cmdline-tools/latest/bin/sdkmanager.bat");
-        if windows_path.exists() {
-            return Some(windows_path);
-        }
-        let unix_path = sdk.join("cmdline-tools/latest/bin/sdkmanager");
-        if unix_path.exists() {
-            return Some(unix_path);
-        }
-        None
-    });
+    let sdkmanager = sdk_root_candidates()
+        .into_iter()
+        .find_map(|sdk| {
+            let windows_path = sdk.join("cmdline-tools/latest/bin/sdkmanager.bat");
+            if windows_path.exists() {
+                return Some(windows_path);
+            }
+            let unix_path = sdk.join("cmdline-tools/latest/bin/sdkmanager");
+            if unix_path.exists() {
+                return Some(unix_path);
+            }
+            None
+        })
+        .or_else(|| {
+            // Check PATH.
+            if command_available("sdkmanager", "--version") {
+                return Some(PathBuf::from("sdkmanager"));
+            }
+            // Homebrew on macOS.
+            homebrew_tool_candidates("sdkmanager")
+                .into_iter()
+                .find(|c| c.exists())
+        });
 
     let Some(sdk_path) = sdkmanager else {
         return Vec::new();

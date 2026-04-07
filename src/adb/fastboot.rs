@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use super::{sdk_root_candidates, CommandExt, CREATE_NO_WINDOW};
+use super::{homebrew_tool_candidates, sdk_root_candidates, CommandExt, CREATE_NO_WINDOW};
 
 pub fn list_fastboot_devices() -> (bool, String) {
     run_fastboot_action(None, &["devices"])
@@ -61,6 +61,13 @@ fn resolve_fastboot() -> Result<PathBuf, String> {
 
     for root in sdk_root_candidates() {
         let candidate = root.join("platform-tools").join(fastboot_binary_name());
+        if candidate.exists() && fastboot_available(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    // Homebrew on macOS installs fastboot directly into its bin directory.
+    for candidate in homebrew_tool_candidates("fastboot") {
         if candidate.exists() && fastboot_available(&candidate) {
             return Ok(candidate);
         }

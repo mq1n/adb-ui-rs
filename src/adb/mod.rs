@@ -142,7 +142,7 @@ const fn adb_binary_name() -> &'static str {
     }
 }
 
-fn command_available(program: impl AsRef<std::ffi::OsStr>, version_arg: &str) -> bool {
+pub(super) fn command_available(program: impl AsRef<std::ffi::OsStr>, version_arg: &str) -> bool {
     Command::new(program)
         .arg(version_arg)
         .stdout(Stdio::null())
@@ -203,15 +203,21 @@ pub fn sdk_root_candidates() -> Vec<PathBuf> {
 }
 
 fn homebrew_adb_candidates() -> Vec<PathBuf> {
+    homebrew_tool_candidates("adb")
+}
+
+/// Homebrew candidates for any Android SDK tool on macOS.
+pub(super) fn homebrew_tool_candidates(tool: &str) -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         vec![
-            PathBuf::from("/opt/homebrew/bin/adb"),
-            PathBuf::from("/usr/local/bin/adb"),
+            PathBuf::from(format!("/opt/homebrew/bin/{tool}")),
+            PathBuf::from(format!("/usr/local/bin/{tool}")),
         ]
     }
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = tool;
         Vec::new()
     }
 }
