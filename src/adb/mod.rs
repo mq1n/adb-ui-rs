@@ -188,6 +188,17 @@ pub fn sdk_root_candidates() -> Vec<PathBuf> {
             push_unique_path(&mut roots, &mut seen, home.join("Library/Android/sdk"));
             push_unique_path(&mut roots, &mut seen, home.join("Library/Android/Sdk"));
         }
+        // Homebrew android-commandlinetools cask installs the SDK here.
+        push_unique_path(
+            &mut roots,
+            &mut seen,
+            PathBuf::from("/opt/homebrew/share/android-commandlinetools"),
+        );
+        push_unique_path(
+            &mut roots,
+            &mut seen,
+            PathBuf::from("/usr/local/share/android-commandlinetools"),
+        );
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

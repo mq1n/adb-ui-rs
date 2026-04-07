@@ -145,7 +145,19 @@ pub fn get_running_emulator_map() -> std::collections::HashMap<String, String> {
     map
 }
 
+/// Infer the SDK root from the emulator binary path.
+/// e.g. `/opt/homebrew/share/android-commandlinetools/emulator/emulator` → parent of `emulator/`.
+fn infer_sdk_root(emu_path: &std::path::Path) -> Option<PathBuf> {
+    // If the binary lives in <sdk>/emulator/emulator, the SDK root is two levels up.
+    let parent = emu_path.parent()?;
+    if parent.file_name()?.to_str()? == "emulator" {
+        return parent.parent().map(PathBuf::from);
+    }
+    None
+}
+
 /// Start an emulator AVD. Returns immediately (emulator runs in background).
+/// Waits briefly to catch early fatal errors from the emulator process.
 pub fn start_emulator(avd_name: &str, cold_boot: bool) -> (bool, String) {
     let Some(emu) = emulator_path() else {
         return (false, "Emulator binary not found".into());
@@ -155,12 +167,52 @@ pub fn start_emulator(avd_name: &str, cold_boot: bool) -> (bool, String) {
     if cold_boot {
         cmd.arg("-no-snapshot-load");
     }
+
+    // Set ANDROID_SDK_ROOT so the emulator can find system images and platform-tools.
+    if std::env::var_os("ANDROID_SDK_ROOT").is_none() {
+        // Try explicit SDK root candidates first, then infer from the emulator binary path.
+        let sdk_root = sdk_root_candidates()
+            .into_iter()
+            .find(|r| r.join("platform-tools").exists())
+            .or_else(|| infer_sdk_root(&emu));
+        if let Some(root) = sdk_root {
+            cmd.env("ANDROID_SDK_ROOT", &root);
+        }
+    }
+
     cmd.stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
 
     match cmd.spawn() {
-        Ok(_) => (true, format!("Emulator '{avd_name}' starting...")),
+        Ok(mut child) => {
+            // Wait briefly to catch immediate fatal errors (e.g. missing system image).
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            match child.try_wait() {
+                Ok(Some(status)) if !status.success() => {
+                    // Process already exited with error — collect stderr.
+                    let stderr = child
+                        .stderr
+                        .take()
+                        .map(|mut se| {
+                            let mut buf = String::new();
+                            std::io::Read::read_to_string(&mut se, &mut buf).ok();
+                            buf
+                        })
+                        .unwrap_or_default();
+                    let reason = stderr
+                        .lines()
+                        .find(|l| l.contains("FATAL") || l.contains("ERROR") || l.contains("error"))
+                        .unwrap_or("unknown error")
+                        .trim();
+                    (false, format!("Emulator exited immediately: {reason}"))
+                }
+                _ => {
+                    // Still running or exited successfully — good.
+                    (true, format!("Emulator '{avd_name}' starting..."))
+                }
+            }
+        }
         Err(e) => (false, format!("Failed to start emulator: {e}")),
     }
 }
