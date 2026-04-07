@@ -34,24 +34,59 @@ fn emulator_path() -> Option<PathBuf> {
 
 /// List available AVDs.
 pub fn list_avds() -> Vec<String> {
-    let Some(emu) = emulator_path() else {
+    // Try the emulator binary first.
+    if let Some(emu) = emulator_path() {
+        let output = Command::new(&emu)
+            .arg("-list-avds")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+
+        if let Ok(o) = output {
+            // Some emulator versions print AVD names to stderr instead of stdout.
+            let text = if o.status.success() && !o.stdout.is_empty() {
+                String::from_utf8_lossy(&o.stdout).to_string()
+            } else {
+                String::from_utf8_lossy(&o.stderr).to_string()
+            };
+            let names: Vec<String> = text
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect();
+            if !names.is_empty() {
+                return names;
+            }
+        }
+    }
+
+    // Fallback: scan ~/.android/avd/ for *.ini files.
+    list_avds_from_directory()
+}
+
+/// Scan the default AVD directory for `.ini` files and derive AVD names.
+fn list_avds_from_directory() -> Vec<String> {
+    let avd_dir = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|h| PathBuf::from(h).join(".android").join("avd"));
+
+    let Some(dir) = avd_dir else {
         return Vec::new();
     };
-    let output = Command::new(&emu)
-        .arg("-list-avds")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
 
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect(),
-        _ => Vec::new(),
-    }
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+
+    entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            name.strip_suffix(".ini").map(|n| n.to_string())
+        })
+        .collect()
 }
 
 /// Get running emulator serials.

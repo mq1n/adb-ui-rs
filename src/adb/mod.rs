@@ -69,6 +69,13 @@ fn resolve_adb() -> Result<PathBuf, String> {
         }
     }
 
+    // Homebrew on macOS installs adb directly into its bin directory.
+    for candidate in homebrew_adb_candidates() {
+        if candidate.exists() && command_available(&candidate, "version") {
+            return Ok(candidate);
+        }
+    }
+
     Err(format!(
         "adb not found on PATH or in common Android SDK locations. Checked: {}",
         sdk_root_candidates()
@@ -177,11 +184,9 @@ pub fn sdk_root_candidates() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         if let Some(path) = std::env::var_os("HOME") {
-            push_unique_path(
-                &mut roots,
-                &mut seen,
-                PathBuf::from(path).join("Library/Android/sdk"),
-            );
+            let home = PathBuf::from(path);
+            push_unique_path(&mut roots, &mut seen, home.join("Library/Android/sdk"));
+            push_unique_path(&mut roots, &mut seen, home.join("Library/Android/Sdk"));
         }
     }
 
@@ -195,6 +200,20 @@ pub fn sdk_root_candidates() -> Vec<PathBuf> {
     }
 
     roots
+}
+
+fn homebrew_adb_candidates() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            PathBuf::from("/opt/homebrew/bin/adb"),
+            PathBuf::from("/usr/local/bin/adb"),
+        ]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, candidate: PathBuf) {
