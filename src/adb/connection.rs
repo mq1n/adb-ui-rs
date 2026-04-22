@@ -139,7 +139,7 @@ pub fn open_wsa_settings() -> bool {
 }
 
 #[cfg(not(windows))]
-pub fn open_wsa_settings() -> bool {
+pub const fn open_wsa_settings() -> bool {
     false
 }
 
@@ -156,7 +156,7 @@ pub fn launch_wsa() -> bool {
 }
 
 #[cfg(not(windows))]
-pub fn launch_wsa() -> bool {
+pub const fn launch_wsa() -> bool {
     false
 }
 
