@@ -4,7 +4,7 @@ use std::time::Duration;
 use eframe::egui;
 
 use crate::adb;
-use crate::adb::mirror::MirrorMode;
+use crate::adb::mirror::{DeviceRotation, DeviceRotationMode, MirrorMode};
 use crate::device::DeviceState;
 
 impl super::App {
@@ -58,6 +58,9 @@ impl super::App {
                 self.draw_mirror_bitrate_combo(ui, serial, serial_owned);
             }
 
+            ui.separator();
+            self.draw_mirror_rotation_menu(ui, serial_owned);
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(ds) = self.devices.get(serial) {
                     ui.label(&ds.mirror.status);
@@ -67,6 +70,32 @@ impl super::App {
                     self.draw_mirror_server_inline(ui, serial, serial_owned);
                 });
             });
+        });
+    }
+
+    fn draw_mirror_rotation_menu(&mut self, ui: &mut egui::Ui, serial_owned: &str) {
+        ui.menu_button("Rotate", |ui| {
+            if ui.button(DeviceRotationMode::Auto.label()).clicked() {
+                self.spawn_mirror_rotation(serial_owned, DeviceRotationMode::Auto);
+                ui.close();
+            }
+
+            ui.separator();
+
+            for rotation in DeviceRotation::ALL {
+                let mode = DeviceRotationMode::Locked(rotation);
+                if ui.button(mode.label()).clicked() {
+                    self.spawn_mirror_rotation(serial_owned, mode);
+                    ui.close();
+                }
+            }
+
+            ui.separator();
+            ui.label(
+                egui::RichText::new("Restarts live mirroring after the rotation change.")
+                    .small()
+                    .color(egui::Color32::from_rgb(160, 160, 160)),
+            );
         });
     }
 
@@ -598,6 +627,18 @@ impl super::App {
             ds.cancel_mirror_session("Stopped");
         }
         self.log_mirror_info(serial, "Stopped");
+    }
+
+    fn spawn_mirror_rotation(&mut self, serial: &str, mode: DeviceRotationMode) {
+        self.log_mirror_info(serial, format!("Applying rotation: {}", mode.label()));
+
+        let tx = self.tx.clone();
+        let serial = serial.to_string();
+        let label = mode.label().to_string();
+        std::thread::spawn(move || {
+            let result = adb::mirror::apply_device_rotation(&serial, mode);
+            let _ = tx.send(adb::AdbMsg::MirrorRotationResult(serial, label, result));
+        });
     }
 
     const fn resolve_mirror_mode(serial: &str) -> MirrorMode {

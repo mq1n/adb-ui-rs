@@ -352,6 +352,8 @@ pub enum AdbMsg {
     MirrorStopped(String, u64, String),
     /// Screen mirror: device display resolution resolved (serial, `mirror_session`, width, height).
     MirrorDisplaySize(String, u64, u32, u32),
+    /// Mirror device rotation change result: (serial, label, `Ok(())` or `Err(msg)`).
+    MirrorRotationResult(String, String, Result<(), String>),
     /// Mirror server management result: (serial, installed, running, message).
     MirrorServerStatus(String, Option<bool>, Option<bool>, String),
     /// Mirror backend log line: (serial, level, message).

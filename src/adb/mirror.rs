@@ -59,6 +59,56 @@ impl MirrorMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceRotation {
+    Portrait,
+    LandscapeLeft,
+    ReversePortrait,
+    LandscapeRight,
+}
+
+impl DeviceRotation {
+    pub const ALL: [Self; 4] = [
+        Self::Portrait,
+        Self::LandscapeLeft,
+        Self::ReversePortrait,
+        Self::LandscapeRight,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Portrait => "Portrait",
+            Self::LandscapeLeft => "Landscape Left",
+            Self::ReversePortrait => "Reverse Portrait",
+            Self::LandscapeRight => "Landscape Right",
+        }
+    }
+
+    const fn wm_value(self) -> &'static str {
+        match self {
+            Self::Portrait => "0",
+            Self::LandscapeLeft => "1",
+            Self::ReversePortrait => "2",
+            Self::LandscapeRight => "3",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceRotationMode {
+    Auto,
+    Locked(DeviceRotation),
+}
+
+impl DeviceRotationMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto Rotate",
+            Self::Locked(rotation) => rotation.label(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MirrorConfig {
     pub width: u32,
@@ -1535,6 +1585,95 @@ pub fn get_display_size(serial: &str) -> Result<(u32, u32), String> {
         .ok_or_else(|| "Could not parse display size".into())
 }
 
+pub fn apply_device_rotation(serial: &str, mode: DeviceRotationMode) -> Result<(), String> {
+    let command_sequences = rotation_command_sequences(mode);
+    let mut errors = Vec::new();
+
+    for sequence in command_sequences {
+        match run_shell_sequence(serial, &sequence) {
+            Ok(()) => return Ok(()),
+            Err(error) => errors.push(format!("{}: {error}", format_shell_sequence(&sequence))),
+        }
+    }
+
+    Err(errors.join("; "))
+}
+
+fn rotation_command_sequences(mode: DeviceRotationMode) -> Vec<Vec<Vec<String>>> {
+    match mode {
+        DeviceRotationMode::Auto => vec![
+            vec![vec!["wm".into(), "user-rotation".into(), "free".into()]],
+            vec![vec![
+                "cmd".into(),
+                "window".into(),
+                "user-rotation".into(),
+                "free".into(),
+            ]],
+            vec![vec![
+                "settings".into(),
+                "put".into(),
+                "system".into(),
+                "accelerometer_rotation".into(),
+                "1".into(),
+            ]],
+        ],
+        DeviceRotationMode::Locked(rotation) => {
+            let value = rotation.wm_value().to_string();
+            vec![
+                vec![vec![
+                    "wm".into(),
+                    "user-rotation".into(),
+                    "lock".into(),
+                    value.clone(),
+                ]],
+                vec![vec![
+                    "cmd".into(),
+                    "window".into(),
+                    "user-rotation".into(),
+                    "lock".into(),
+                    value.clone(),
+                ]],
+                vec![
+                    vec![
+                        "settings".into(),
+                        "put".into(),
+                        "system".into(),
+                        "user_rotation".into(),
+                        value,
+                    ],
+                    vec![
+                        "settings".into(),
+                        "put".into(),
+                        "system".into(),
+                        "accelerometer_rotation".into(),
+                        "0".into(),
+                    ],
+                ],
+            ]
+        }
+    }
+}
+
+fn run_shell_sequence(serial: &str, sequence: &[Vec<String>]) -> Result<(), String> {
+    for command in sequence {
+        let args: Vec<&str> = command.iter().map(String::as_str).collect();
+        let output = adb_shell_output(serial, &args)?;
+        if !output.status.success() {
+            return Err(describe_process_output(&output));
+        }
+    }
+
+    Ok(())
+}
+
+fn format_shell_sequence(sequence: &[Vec<String>]) -> String {
+    sequence
+        .iter()
+        .map(|command| command.join(" "))
+        .collect::<Vec<_>>()
+        .join(" && ")
+}
+
 fn parse_wxh(text: &str) -> Option<(u32, u32)> {
     let (width, height) = text.trim().split_once('x')?;
     Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
@@ -2085,5 +2224,55 @@ mod tests {
         assert_eq!(make_even_dimension(1), 2);
         assert_eq!(make_even_dimension(5), 4);
         assert_eq!(make_even_dimension(8), 8);
+    }
+
+    #[test]
+    fn device_rotation_values_match_android_wm_protocol() {
+        assert_eq!(DeviceRotation::Portrait.wm_value(), "0");
+        assert_eq!(DeviceRotation::LandscapeLeft.wm_value(), "1");
+        assert_eq!(DeviceRotation::ReversePortrait.wm_value(), "2");
+        assert_eq!(DeviceRotation::LandscapeRight.wm_value(), "3");
+    }
+
+    #[test]
+    fn auto_rotation_fallback_sequence_enables_sensor_rotation() {
+        let commands = rotation_command_sequences(DeviceRotationMode::Auto);
+        assert_eq!(commands.len(), 3);
+        assert_eq!(
+            commands[2],
+            vec![vec![
+                "settings".to_string(),
+                "put".to_string(),
+                "system".to_string(),
+                "accelerometer_rotation".to_string(),
+                "1".to_string(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn locked_rotation_fallback_sequence_locks_requested_value() {
+        let commands =
+            rotation_command_sequences(DeviceRotationMode::Locked(DeviceRotation::LandscapeRight));
+        assert_eq!(commands.len(), 3);
+        assert_eq!(
+            commands[2],
+            vec![
+                vec![
+                    "settings".to_string(),
+                    "put".to_string(),
+                    "system".to_string(),
+                    "user_rotation".to_string(),
+                    "3".to_string(),
+                ],
+                vec![
+                    "settings".to_string(),
+                    "put".to_string(),
+                    "system".to_string(),
+                    "accelerometer_rotation".to_string(),
+                    "0".to_string(),
+                ],
+            ]
+        );
     }
 }
