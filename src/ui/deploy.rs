@@ -330,7 +330,10 @@ impl super::App {
         ui.label(egui::RichText::new("Deploy Log").strong());
         if let Some(ds) = self.devices.get(serial) {
             if !ds.deploy.status.is_empty() {
-                ui.colored_label(egui::Color32::from_rgb(180, 180, 180), &ds.deploy.status);
+                ui.colored_label(
+                    egui::Color32::from_rgb(180, 180, 180),
+                    self.display_text(&ds.deploy.status),
+                );
             }
         }
 
@@ -376,17 +379,18 @@ impl super::App {
                     .show(ui, |ui| {
                         ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                         for line in ds.deploy.crash_log.lines() {
-                            let color = if line.contains("FATAL")
-                                || line.contains("Error")
-                                || line.contains("Exception")
+                            let visible_line = self.display_text(line);
+                            let color = if visible_line.contains("FATAL")
+                                || visible_line.contains("Error")
+                                || visible_line.contains("Exception")
                             {
                                 egui::Color32::from_rgb(255, 80, 80)
-                            } else if line.contains("Warning") {
+                            } else if visible_line.contains("Warning") {
                                 egui::Color32::from_rgb(255, 200, 50)
                             } else {
                                 egui::Color32::from_rgb(200, 200, 200)
                             };
-                            ui.label(egui::RichText::new(line).color(color));
+                            ui.label(egui::RichText::new(visible_line).color(color));
                         }
                     });
             }

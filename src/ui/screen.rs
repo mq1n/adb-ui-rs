@@ -102,7 +102,7 @@ impl super::App {
 
             if let Some(ds) = self.devices.get(serial) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(&ds.screen_status);
+                    ui.label(self.display_text(&ds.screen_status));
                 });
             }
         });

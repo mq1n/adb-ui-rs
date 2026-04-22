@@ -63,7 +63,7 @@ impl super::App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(ds) = self.devices.get(serial) {
-                    ui.label(&ds.mirror.status);
+                    ui.label(self.display_text(&ds.mirror.status));
                 }
                 ui.separator();
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -438,7 +438,7 @@ impl super::App {
         if !status.is_empty() {
             ui.separator();
             ui.label(
-                egui::RichText::new(status)
+                egui::RichText::new(self.display_text(&status))
                     .small()
                     .color(egui::Color32::from_rgb(160, 160, 160)),
             );

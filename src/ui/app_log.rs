@@ -27,18 +27,12 @@ impl super::App {
             .show(ui, |ui| {
                 ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                 for entry in &self.log_entries {
-                    if !filter_lower.is_empty()
-                        && !entry.message.to_lowercase().contains(&filter_lower)
-                    {
+                    let message = self.display_text(&entry.message);
+                    if !filter_lower.is_empty() && !message.to_lowercase().contains(&filter_lower) {
                         continue;
                     }
                     let color = entry.level.color();
-                    let line = format!(
-                        "{} [{}] {}",
-                        entry.timestamp,
-                        entry.level.label(),
-                        entry.message,
-                    );
+                    let line = format!("{} [{}] {}", entry.timestamp, entry.level.label(), message);
                     ui.label(egui::RichText::new(line).color(color));
                 }
             });

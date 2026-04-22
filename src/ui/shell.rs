@@ -74,7 +74,10 @@ impl super::App {
             let lines: Vec<(String, egui::Color32)> = ds
                 .shell_output
                 .iter()
-                .map(|line| (line.clone(), shell_line_color(line)))
+                .map(|line| {
+                    let visible_line = self.display_text(line);
+                    (visible_line.clone(), shell_line_color(&visible_line))
+                })
                 .collect();
             egui::ScrollArea::vertical()
                 .id_salt(format!("shell_output_{serial}"))

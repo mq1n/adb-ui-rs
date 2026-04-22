@@ -22,15 +22,25 @@ impl super::App {
     fn draw_settings_fields(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Bundle ID / Package Name").strong());
         ui.add_space(2.0);
-        ui.text_edit_singleline(&mut self.bundle_id_input);
+        if self.streamer_mode_active() {
+            let mut masked = self.display_text(&self.bundle_id_input);
+            ui.add_enabled(false, egui::TextEdit::singleline(&mut masked));
+        } else {
+            ui.text_edit_singleline(&mut self.bundle_id_input);
+        }
         ui.add_space(12.0);
 
         ui.label(egui::RichText::new("Activity / Component (for am start -n)").strong());
         ui.add_space(2.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut self.activity_class_input)
-                .hint_text("e.g. .MainActivity or com.app.name/.MainActivity"),
-        );
+        if self.streamer_mode_active() {
+            let mut masked = self.display_text(&self.activity_class_input);
+            ui.add_enabled(false, egui::TextEdit::singleline(&mut masked));
+        } else {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.activity_class_input)
+                    .hint_text("e.g. .MainActivity or com.app.name/.MainActivity"),
+            );
+        }
         ui.colored_label(
             egui::Color32::from_rgb(120, 120, 120),
             "Leave empty to auto-resolve the launchable activity",
@@ -43,12 +53,23 @@ impl super::App {
             .id_salt("settings_tags_scroll")
             .max_height(300.0)
             .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.log_tags_input)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(12)
-                        .font(egui::FontId::monospace(13.0)),
-                );
+                if self.streamer_mode_active() {
+                    let mut masked = self.display_text(&self.log_tags_input);
+                    ui.add_enabled(
+                        false,
+                        egui::TextEdit::multiline(&mut masked)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(12)
+                            .font(egui::FontId::monospace(13.0)),
+                    );
+                } else {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.log_tags_input)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(12)
+                            .font(egui::FontId::monospace(13.0)),
+                    );
+                }
             });
 
         ui.add_space(12.0);
@@ -155,19 +176,23 @@ impl super::App {
         ui.separator();
         ui.add_space(4.0);
         ui.label(
-            egui::RichText::new(format!("Config: {}", self.config_path.display()))
+            egui::RichText::new(
+                self.display_text(&format!("Config: {}", self.config_path.display())),
+            )
+            .small()
+            .color(egui::Color32::from_rgb(150, 150, 150)),
+        );
+        ui.label(
+            egui::RichText::new(self.display_text(&format!("Current: {}", self.config.bundle_id)))
                 .small()
                 .color(egui::Color32::from_rgb(150, 150, 150)),
         );
         ui.label(
-            egui::RichText::new(format!("Current: {}", self.config.bundle_id))
-                .small()
-                .color(egui::Color32::from_rgb(150, 150, 150)),
-        );
-        ui.label(
-            egui::RichText::new(format!("Tags: {}", self.config.logcat_tags.join(", ")))
-                .small()
-                .color(egui::Color32::from_rgb(150, 150, 150)),
+            egui::RichText::new(
+                self.display_text(&format!("Tags: {}", self.config.logcat_tags.join(", "))),
+            )
+            .small()
+            .color(egui::Color32::from_rgb(150, 150, 150)),
         );
     }
 

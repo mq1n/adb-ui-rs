@@ -384,7 +384,7 @@ impl super::App {
                             egui::RichText::new(key).color(egui::Color32::from_rgb(140, 180, 220)),
                         );
                         ui.label(
-                            egui::RichText::new(val)
+                            egui::RichText::new(self.display_device_prop_value(val))
                                 .monospace()
                                 .color(egui::Color32::from_rgb(220, 220, 220)),
                         );
@@ -396,7 +396,7 @@ impl super::App {
         ui.add_space(8.0);
 
         // ── App Management ────────────────────────────────────
-        Self::draw_section_header(ui, &format!("App: {bundle_id}"));
+        Self::draw_section_header(ui, &self.display_text(&format!("App: {bundle_id}")));
 
         // Launch & lifecycle.
         let activity = self.config.activity_class.clone();
@@ -1273,21 +1273,22 @@ impl super::App {
                 .show(&mut right_ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(11.0));
                     for line in &ds.action_log {
-                        let color = if line.contains("failed")
-                            || line.contains("FAILED")
-                            || line.contains("Error")
+                        let visible_line = self.display_text(line);
+                        let color = if visible_line.contains("failed")
+                            || visible_line.contains("FAILED")
+                            || visible_line.contains("Error")
                         {
                             egui::Color32::from_rgb(255, 80, 80)
-                        } else if line.contains("succeeded")
-                            || line.contains("OK")
-                            || line.contains("Success")
-                            || line.contains("connected")
+                        } else if visible_line.contains("succeeded")
+                            || visible_line.contains("OK")
+                            || visible_line.contains("Success")
+                            || visible_line.contains("connected")
                         {
                             egui::Color32::from_rgb(100, 220, 100)
                         } else {
                             egui::Color32::from_rgb(200, 200, 200)
                         };
-                        ui.label(egui::RichText::new(line).color(color));
+                        ui.label(egui::RichText::new(visible_line).color(color));
                     }
                 });
         }

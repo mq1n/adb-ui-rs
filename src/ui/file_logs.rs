@@ -260,7 +260,7 @@ impl super::App {
         row.col(|ui| {
             ui.style_mut().interaction.selectable_labels = false;
             ui.label(
-                egui::RichText::new(&entry.name)
+                egui::RichText::new(self.display_text(&entry.name))
                     .monospace()
                     .color(egui::Color32::from_rgb(220, 220, 220)),
             );
@@ -357,34 +357,39 @@ impl super::App {
         };
 
         // Header.
-        if let Some(ds) = self.devices.get_mut(&serial_owned) {
-            if let Some(entry) = ds.file_logs.get(&key).cloned() {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&entry.name).strong().monospace());
-                    ui.colored_label(
-                        egui::Color32::from_rgb(140, 140, 140),
-                        format!(
-                            "[{}] {} | {}",
-                            entry.source,
-                            format_size(entry.size),
-                            entry.modified,
-                        ),
-                    );
-                    ui.separator();
-                    if ui.button("Export").clicked() {
-                        file_export_result = Some((
-                            entry.name.clone(),
-                            export_single_file(&entry.name, &entry.content),
-                        ));
-                    }
-                    if ui.button("Copy").clicked() {
-                        ui.ctx().copy_text(entry.content.clone());
-                    }
-                    ui.separator();
-                    ui.label("Search:");
+        let header_entry = self
+            .devices
+            .get(serial)
+            .and_then(|ds| ds.file_logs.get(&key).cloned());
+        if let Some(entry) = header_entry {
+            let visible_name = self.display_text(&entry.name);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(visible_name).strong().monospace());
+                ui.colored_label(
+                    egui::Color32::from_rgb(140, 140, 140),
+                    format!(
+                        "[{}] {} | {}",
+                        entry.source,
+                        format_size(entry.size),
+                        entry.modified,
+                    ),
+                );
+                ui.separator();
+                if ui.button("Export").clicked() {
+                    file_export_result = Some((
+                        entry.name.clone(),
+                        export_single_file(&entry.name, &entry.content),
+                    ));
+                }
+                if ui.button("Copy").clicked() {
+                    ui.ctx().copy_text(entry.content.clone());
+                }
+                ui.separator();
+                ui.label("Search:");
+                if let Some(ds) = self.devices.get_mut(&serial_owned) {
                     ui.text_edit_singleline(&mut ds.file_content_filter);
-                });
-            }
+                }
+            });
         }
         if let Some((name, result)) = file_export_result {
             match result {
@@ -415,13 +420,14 @@ impl super::App {
                     .show(ui, |ui| {
                         ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                         for line in entry.content.lines() {
+                            let visible_line = self.display_text(line);
                             if !filter_lower.is_empty()
-                                && !line.to_lowercase().contains(&filter_lower)
+                                && !visible_line.to_lowercase().contains(&filter_lower)
                             {
                                 continue;
                             }
-                            let color = file_log_line_color(line);
-                            ui.label(egui::RichText::new(line).color(color));
+                            let color = file_log_line_color(&visible_line);
+                            ui.label(egui::RichText::new(visible_line).color(color));
                         }
                     });
             }

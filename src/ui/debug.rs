@@ -190,13 +190,14 @@ impl super::App {
                     .show(ui, |ui| {
                         ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                         for line in text.lines() {
+                            let visible_line = self.display_text(line);
                             if !filter_lower.is_empty()
-                                && !line.to_lowercase().contains(&filter_lower)
+                                && !visible_line.to_lowercase().contains(&filter_lower)
                             {
                                 continue;
                             }
-                            let color = debug_line_color(line);
-                            ui.label(egui::RichText::new(line).color(color));
+                            let color = debug_line_color(&visible_line);
+                            ui.label(egui::RichText::new(visible_line).color(color));
                         }
                     });
             } else if !is_loading {

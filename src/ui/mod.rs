@@ -9,6 +9,7 @@ mod helpers;
 mod logs;
 mod mirror;
 mod monitor;
+mod privacy;
 mod screen;
 mod settings;
 mod shell;
@@ -28,6 +29,7 @@ use crate::device::{CapabilityStatus, DebugCategory, DeviceState, LogSource, Mon
 pub use helpers::now_str;
 
 const DEVICE_POLL_INTERVAL: f64 = 3.0;
+const STREAMER_MODE_POLL_INTERVAL: f64 = 2.0;
 const FILE_WATCH_INTERVAL: Duration = Duration::from_secs(3);
 const MAX_APP_LOG_LINES: usize = 5_000;
 const ACTIVE_REPAINT_INTERVAL: Duration = Duration::from_millis(100);
@@ -77,6 +79,7 @@ pub struct App {
     pub active_device: Option<String>,
     pub logcat_procs: HashMap<String, Child>,
     pub last_device_poll: f64,
+    pub last_streamer_mode_poll: f64,
     pub status: String,
     pub fatal_error: Option<String>,
     pub adb_path_candidate: String,
@@ -126,6 +129,14 @@ pub struct App {
     pub running_emu_map: HashMap<String, String>,
     /// Whether the App Log panel is visible.
     pub show_app_log: bool,
+    /// Whether automatic streamer mode is currently active.
+    pub streamer_mode: bool,
+    /// Stable redacted device aliases keyed by serial.
+    pub streamer_device_aliases: HashMap<String, usize>,
+    /// Last observed device model keyed by serial for redacting stale log lines.
+    pub streamer_device_models: HashMap<String, String>,
+    /// Next alias ordinal to assign to a newly seen device.
+    pub next_streamer_device_alias: usize,
 }
 
 impl App {
@@ -160,6 +171,7 @@ impl App {
             active_device: None,
             logcat_procs: HashMap::new(),
             last_device_poll: 0.0,
+            last_streamer_mode_poll: 0.0,
             status: "Scanning for devices...".into(),
             fatal_error: None,
             adb_path_candidate: String::new(),
@@ -195,6 +207,10 @@ impl App {
             available_system_images: Vec::new(),
             running_emu_map: HashMap::new(),
             show_app_log: false,
+            streamer_mode: false,
+            streamer_device_aliases: HashMap::new(),
+            streamer_device_models: HashMap::new(),
+            next_streamer_device_alias: 1,
         };
 
         for warning in config_warnings {
@@ -987,6 +1003,9 @@ impl App {
         self.hidden_devices.retain(|s| new_serials.contains(s));
 
         for dev in devs {
+            self.ensure_streamer_device_alias(&dev.serial);
+            self.streamer_device_models
+                .insert(dev.serial.clone(), dev.model.clone());
             if self.hidden_devices.contains(&dev.serial) {
                 continue; // User closed this tab — don't re-add.
             }
@@ -1184,6 +1203,7 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = ctx.input(|i| i.time);
         self.drain_messages();
+        self.maybe_poll_streamer_mode(now);
         self.maybe_poll_devices(now);
         ctx.request_repaint_after(self.repaint_interval());
     }
@@ -1193,7 +1213,11 @@ impl eframe::App for App {
         egui::Panel::top("top_bar").show_inside(ui, |ui| {
             // Row 1: status + action buttons.
             ui.horizontal(|ui| {
-                ui.label(&self.status);
+                ui.label(self.display_text(&self.status));
+                if let Some(badge) = self.streamer_mode_badge() {
+                    ui.separator();
+                    ui.label(badge);
+                }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let settings_label = if self.show_settings {
@@ -1253,7 +1277,7 @@ impl eframe::App for App {
                     let mut close_serial: Option<String> = None;
                     for serial in &order {
                         if let Some(ds) = self.devices.get(serial) {
-                            let label = ds.label();
+                            let label = self.display_device_label(serial, &ds.info.model);
                             let selected = self.active_device.as_ref() == Some(serial);
                             let color = if ds.info.state == "device" {
                                 egui::Color32::from_rgb(100, 200, 100)
@@ -1407,11 +1431,19 @@ impl App {
 
                 ui.horizontal(|ui| {
                     ui.label("WiFi/TCP:");
-                    ui.add_sized(
-                        [160.0, 18.0],
-                        egui::TextEdit::singleline(&mut self.wifi_connect_addr)
-                            .hint_text("192.168.1.x:5555"),
-                    );
+                    if self.streamer_mode_active() {
+                        let mut masked = self.display_text(&self.wifi_connect_addr);
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut masked).hint_text("<address>"),
+                        );
+                    } else {
+                        ui.add_sized(
+                            [160.0, 18.0],
+                            egui::TextEdit::singleline(&mut self.wifi_connect_addr)
+                                .hint_text("192.168.1.x:5555"),
+                        );
+                    }
                     if ui.button("Connect").clicked() && !self.wifi_connect_addr.is_empty() {
                         let addr = self.wifi_connect_addr.clone();
                         let tx = self.tx.clone();
@@ -1475,15 +1507,28 @@ impl App {
                 // Wireless pairing.
                 ui.horizontal(|ui| {
                     ui.label("Pair:");
-                    ui.add_sized(
-                        [120.0, 18.0],
-                        egui::TextEdit::singleline(&mut self.pair_address_input)
-                            .hint_text("host:port"),
-                    );
-                    ui.add_sized(
-                        [70.0, 18.0],
-                        egui::TextEdit::singleline(&mut self.pair_code_input).hint_text("code"),
-                    );
+                    if self.streamer_mode_active() {
+                        let mut masked_addr = self.display_text(&self.pair_address_input);
+                        let mut masked_code = self.display_text(&self.pair_code_input);
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut masked_addr).hint_text("<address>"),
+                        );
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut masked_code).hint_text("<pair-code>"),
+                        );
+                    } else {
+                        ui.add_sized(
+                            [120.0, 18.0],
+                            egui::TextEdit::singleline(&mut self.pair_address_input)
+                                .hint_text("host:port"),
+                        );
+                        ui.add_sized(
+                            [70.0, 18.0],
+                            egui::TextEdit::singleline(&mut self.pair_code_input).hint_text("code"),
+                        );
+                    }
                     let can_pair = !self.pair_address_input.trim().is_empty()
                         && !self.pair_code_input.trim().is_empty();
                     if ui
@@ -1528,8 +1573,15 @@ impl App {
                             };
                             ui.horizontal(|ui| {
                                 ui.colored_label(state_color, &ds.info.state);
-                                ui.label(egui::RichText::new(&ds.info.model).monospace().small());
-                                ui.colored_label(egui::Color32::from_rgb(120, 120, 120), serial);
+                                ui.label(
+                                    egui::RichText::new(self.display_model(serial, &ds.info.model))
+                                        .monospace()
+                                        .small(),
+                                );
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(120, 120, 120),
+                                    self.display_serial(serial),
+                                );
                                 if is_emu {
                                     ui.colored_label(
                                         egui::Color32::from_rgb(180, 130, 255),

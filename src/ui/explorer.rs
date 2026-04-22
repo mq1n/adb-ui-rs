@@ -582,7 +582,7 @@ impl super::App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(device) = self.devices.get(serial) {
                     ui.label(
-                        egui::RichText::new(device.explorer_visible_path())
+                        egui::RichText::new(self.display_text(&device.explorer_visible_path()))
                             .small()
                             .monospace()
                             .color(egui::Color32::from_rgb(140, 140, 140)),
@@ -613,7 +613,11 @@ impl super::App {
     fn draw_explorer_preview(&self, ui: &mut egui::Ui, serial: &str) {
         if let Some(device) = self.devices.get(serial) {
             if let Some(selected) = device.explorer_selected.as_ref() {
-                ui.label(egui::RichText::new(selected).strong().monospace());
+                ui.label(
+                    egui::RichText::new(self.display_text(selected))
+                        .strong()
+                        .monospace(),
+                );
                 ui.separator();
 
                 if device.explorer_preview_loading {
@@ -625,13 +629,13 @@ impl super::App {
                         .show(ui, |ui| {
                             ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                             for line in content.lines() {
-                                ui.label(line);
+                                ui.label(self.display_text(line));
                             }
                         });
                 } else if !device.explorer_preview_error.is_empty() {
                     ui.colored_label(
                         egui::Color32::from_rgb(255, 80, 80),
-                        &device.explorer_preview_error,
+                        self.display_text(&device.explorer_preview_error),
                     );
                 } else {
                     ui.colored_label(
@@ -665,9 +669,9 @@ impl super::App {
         ui.label(egui::RichText::new("Explorer Commands").strong());
         ui.colored_label(
             egui::Color32::from_rgb(140, 140, 140),
-            format!(
+            self.display_text(&format!(
                 "Working directory: {current_display_path}\n`cd` updates the explorer path. `tail -f` runs as live polling."
-            ),
+            )),
         );
         ui.add_space(4.0);
 
@@ -859,7 +863,7 @@ impl super::App {
                             } else {
                                 egui::Color32::from_rgb(140, 140, 140)
                             },
-                            &device.explorer_command_status,
+                            self.display_text(&device.explorer_command_status),
                         );
                         ui.separator();
                     }
@@ -882,7 +886,11 @@ impl super::App {
                 .show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(12.0));
                     for line in device.explorer_command_output.lines() {
-                        ui.label(egui::RichText::new(line).color(debug_line_color(line)));
+                        let visible_line = self.display_text(line);
+                        ui.label(
+                            egui::RichText::new(&visible_line)
+                                .color(debug_line_color(&visible_line)),
+                        );
                     }
                 });
         }
@@ -920,7 +928,11 @@ impl super::App {
                 .show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(11.0));
                     for line in &device.explorer_log_lines {
-                        ui.label(egui::RichText::new(line).color(debug_line_color(line)));
+                        let visible_line = self.display_text(line);
+                        ui.label(
+                            egui::RichText::new(&visible_line)
+                                .color(debug_line_color(&visible_line)),
+                        );
                     }
                 });
         }

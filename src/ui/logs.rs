@@ -393,18 +393,19 @@ impl super::App {
             let len = ds.logcat_lines.len();
             let page_lines = &ds.logcat_lines[page_start.min(len)..page_end.min(len)];
 
-            // Build a single filtered string for selectable display.
-            let filtered: String = page_lines
-                .iter()
-                .filter(|line| {
-                    device::line_passes_level(line, level)
-                        && device::line_passes_tag(line, &tag_filter)
-                        && device::line_passes_pid(line, &pid_filter)
-                        && (filter_lower.is_empty() || line.to_lowercase().contains(&filter_lower))
-                })
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n");
+            let mut filtered_lines = Vec::new();
+            for line in page_lines {
+                let visible_line = self.display_text(line);
+                if device::line_passes_level(line, level)
+                    && device::line_passes_tag(line, &tag_filter)
+                    && device::line_passes_pid(line, &pid_filter)
+                    && (filter_lower.is_empty()
+                        || visible_line.to_lowercase().contains(&filter_lower))
+                {
+                    filtered_lines.push(visible_line);
+                }
+            }
+            let filtered = filtered_lines.join("\n");
 
             let mut buf = ReadOnlyText(filtered);
             let font_id = egui::FontId::monospace(12.0);
@@ -582,19 +583,18 @@ impl super::App {
                 let len = lines.len();
                 let page_lines = &lines[page_start.min(len)..page_end.min(len)];
 
-                // Build a single filtered string (reversed) for selectable display.
-                let filtered: String = page_lines
-                    .iter()
-                    .rev()
-                    .filter(|line| {
-                        device::line_passes_tag(line, &tag_filter)
-                            && device::line_passes_pid(line, &pid_filter)
-                            && (filter_lower.is_empty()
-                                || line.to_lowercase().contains(&filter_lower))
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let mut filtered_lines = Vec::new();
+                for line in page_lines.iter().rev() {
+                    let visible_line = self.display_text(line);
+                    if device::line_passes_tag(line, &tag_filter)
+                        && device::line_passes_pid(line, &pid_filter)
+                        && (filter_lower.is_empty()
+                            || visible_line.to_lowercase().contains(&filter_lower))
+                    {
+                        filtered_lines.push(visible_line);
+                    }
+                }
+                let filtered = filtered_lines.join("\n");
 
                 let mut buf = ReadOnlyText(filtered);
                 let font_id = egui::FontId::monospace(12.0);
