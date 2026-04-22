@@ -941,26 +941,55 @@ impl App {
                     }
                     self.log_mirror_info(&serial, format!("Device display size: {w}x{h}"));
                 }
-                AdbMsg::MirrorRotationResult(serial, label, result) => match result {
-                    Ok(()) => {
-                        self.log_mirror_info(&serial, format!("Rotation set to {label}"));
-                        let should_restart =
-                            self.devices.get(&serial).is_some_and(|ds| ds.mirror.active);
-                        if should_restart {
-                            if let Some(ds) = self.devices.get_mut(&serial) {
-                                ds.cancel_mirror_session("Restarting after rotation change");
-                            }
-                            self.log_mirror_info(
-                                &serial,
-                                "Restarting mirror after rotation change",
-                            );
-                            self.start_mirroring(&serial);
+                AdbMsg::MirrorDisplayState(serial, session, w, h, rotation, mode) => {
+                    let is_current = self
+                        .devices
+                        .get(&serial)
+                        .is_some_and(|ds| ds.mirror_session == session);
+                    if !is_current {
+                        self.log_mirror_warn(&serial, "Ignored stale display-state event");
+                        continue;
+                    }
+
+                    let mut rotation_changed = false;
+                    if let Some(ds) = self.devices.get_mut(&serial) {
+                        rotation_changed = ds
+                            .mirror
+                            .current_rotation
+                            .is_some_and(|prev| prev != rotation);
+                        ds.mirror.current_rotation = Some(rotation);
+                        ds.mirror.device_width = w;
+                        ds.mirror.device_height = h;
+                        ds.mirror_rotation_mode = mode;
+                    }
+
+                    if rotation_changed {
+                        self.log_mirror_info(
+                            &serial,
+                            format!(
+                                "Display rotated to {} ({}x{}), restarting mirror",
+                                rotation.label(),
+                                w,
+                                h
+                            ),
+                        );
+                        if let Some(ds) = self.devices.get_mut(&serial) {
+                            ds.cancel_mirror_session("Restarting after display rotation");
                         }
+                        self.start_mirroring(&serial);
+                    }
+                }
+                AdbMsg::MirrorRotationResult(serial, mode, result) => match result {
+                    Ok(()) => {
+                        if let Some(ds) = self.devices.get_mut(&serial) {
+                            ds.mirror_rotation_mode = mode;
+                        }
+                        self.log_mirror_info(&serial, format!("Rotation set to {}", mode.label()));
                     }
                     Err(error) => {
                         self.log_mirror_error(
                             &serial,
-                            format!("Failed to set rotation to {label}: {error}"),
+                            format!("Failed to set rotation to {}: {error}", mode.label()),
                         );
                     }
                 },

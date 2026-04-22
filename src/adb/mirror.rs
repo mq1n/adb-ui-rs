@@ -27,6 +27,7 @@ const MIRROR_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MIRROR_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(150);
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 const SCREENCAP_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const MIRROR_DISPLAY_STATE_POLL_INTERVAL: Duration = Duration::from_millis(750);
 const MIN_VIDEO_EDGE: u32 = 2;
 const MAX_SERVER_LOG_LINES: usize = 20;
 
@@ -92,10 +93,21 @@ impl DeviceRotation {
             Self::LandscapeRight => "3",
         }
     }
+
+    const fn from_wm_value(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Portrait),
+            1 => Some(Self::LandscapeLeft),
+            2 => Some(Self::ReversePortrait),
+            3 => Some(Self::LandscapeRight),
+            _ => None,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DeviceRotationMode {
+    #[default]
     Auto,
     Locked(DeviceRotation),
 }
@@ -107,6 +119,14 @@ impl DeviceRotationMode {
             Self::Locked(rotation) => rotation.label(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DisplayState {
+    width: u32,
+    height: u32,
+    rotation: DeviceRotation,
+    mode: DeviceRotationMode,
 }
 
 #[derive(Debug, Clone)]
@@ -473,26 +493,58 @@ pub fn start_mirror(
     let control_c = control.clone();
     let serial_c = serial.to_string();
     let config_c = config.clone();
+    let tx_worker = tx.clone();
 
     std::thread::Builder::new()
         .name(format!("mirror-{serial}"))
         .spawn(move || match mode {
             MirrorMode::Screenrecord => {
-                worker_screenrecord(&serial_c, session, &config_c, &stop_c, &buf_c, &tx);
+                worker_screenrecord(&serial_c, session, &config_c, &stop_c, &buf_c, &tx_worker);
             }
             MirrorMode::Server => {
                 worker_server(
-                    &serial_c, session, &config_c, &stop_c, &buf_c, &control_c, &tx,
+                    &serial_c, session, &config_c, &stop_c, &buf_c, &control_c, &tx_worker,
                 );
             }
         })
         .map_err(|error| format!("Failed to spawn mirror thread: {error}"))?;
+
+    spawn_display_state_watcher(serial, session, stop.clone(), tx);
 
     Ok(MirrorHandle {
         stop,
         frame_buffer,
         control,
     })
+}
+
+fn spawn_display_state_watcher(
+    serial: &str,
+    session: u64,
+    stop: Arc<AtomicBool>,
+    tx: Sender<AdbMsg>,
+) {
+    let serial = serial.to_string();
+    std::thread::spawn(move || {
+        let mut last_state: Option<DisplayState> = None;
+        while !stop.load(Ordering::Acquire) {
+            if let Ok(state) = get_display_state(&serial) {
+                let changed = last_state != Some(state);
+                if changed {
+                    let _ = tx.send(AdbMsg::MirrorDisplayState(
+                        serial.clone(),
+                        session,
+                        state.width,
+                        state.height,
+                        state.rotation,
+                        state.mode,
+                    ));
+                    last_state = Some(state);
+                }
+            }
+            std::thread::sleep(MIRROR_DISPLAY_STATE_POLL_INTERVAL);
+        }
+    });
 }
 
 fn worker_screenrecord(
@@ -1563,6 +1615,10 @@ fn remove_adb_forward(serial: &str, port: u16) -> Result<(), String> {
 }
 
 pub fn get_display_size(serial: &str) -> Result<(u32, u32), String> {
+    if let Ok(state) = get_display_state(serial) {
+        return Ok((state.width, state.height));
+    }
+
     let output = adb_shell_output(serial, &["wm", "size"])?;
     if !output.status.success() {
         return Err(describe_process_output(&output));
@@ -1585,6 +1641,66 @@ pub fn get_display_size(serial: &str) -> Result<(u32, u32), String> {
         .ok_or_else(|| "Could not parse display size".into())
 }
 
+fn get_display_state(serial: &str) -> Result<DisplayState, String> {
+    let output = adb_shell_output(serial, &["dumpsys", "window", "displays"])?;
+    if !output.status.success() {
+        return Err(describe_process_output(&output));
+    }
+
+    parse_display_state(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_display_state(text: &str) -> Result<DisplayState, String> {
+    let mut width = None;
+    let mut height = None;
+    let mut current_rotation = None;
+    let mut user_rotation = None;
+    let mut user_locked = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(cur) = trimmed
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix("cur="))
+        {
+            if let Some((w, h)) = parse_wxh(cur) {
+                width = Some(w);
+                height = Some(h);
+            }
+        }
+        if let Some(rotation) = trimmed.strip_prefix("mCurrentRotation=ROTATION_") {
+            current_rotation =
+                parse_rotation_number(rotation).and_then(DeviceRotation::from_wm_value);
+        }
+        if let Some(rest) = trimmed.strip_prefix("mUserRotationMode=") {
+            user_locked = Some(rest.starts_with("USER_ROTATION_LOCKED"));
+            if let Some(value) = rest
+                .split_whitespace()
+                .find_map(|part| part.strip_prefix("mUserRotation=ROTATION_"))
+            {
+                user_rotation =
+                    parse_rotation_number(value).and_then(DeviceRotation::from_wm_value);
+            }
+        }
+    }
+
+    let width = width.ok_or_else(|| "Could not parse current display width".to_string())?;
+    let height = height.ok_or_else(|| "Could not parse current display height".to_string())?;
+    let rotation =
+        current_rotation.ok_or_else(|| "Could not parse current display rotation".to_string())?;
+    let mode = match (user_locked, user_rotation) {
+        (Some(true), Some(rotation)) => DeviceRotationMode::Locked(rotation),
+        _ => DeviceRotationMode::Auto,
+    };
+
+    Ok(DisplayState {
+        width,
+        height,
+        rotation,
+        mode,
+    })
+}
+
 pub fn apply_device_rotation(serial: &str, mode: DeviceRotationMode) -> Result<(), String> {
     let command_sequences = rotation_command_sequences(mode);
     let mut errors = Vec::new();
@@ -1602,13 +1718,36 @@ pub fn apply_device_rotation(serial: &str, mode: DeviceRotationMode) -> Result<(
 fn rotation_command_sequences(mode: DeviceRotationMode) -> Vec<Vec<Vec<String>>> {
     match mode {
         DeviceRotationMode::Auto => vec![
-            vec![vec!["wm".into(), "user-rotation".into(), "free".into()]],
-            vec![vec![
-                "cmd".into(),
-                "window".into(),
-                "user-rotation".into(),
-                "free".into(),
-            ]],
+            vec![
+                vec![
+                    "wm".into(),
+                    "fixed-to-user-rotation".into(),
+                    "default".into(),
+                ],
+                vec!["wm".into(), "user-rotation".into(), "free".into()],
+            ],
+            vec![
+                vec![
+                    "wm".into(),
+                    "fixed-to-user-rotation".into(),
+                    "disabled".into(),
+                ],
+                vec!["wm".into(), "user-rotation".into(), "free".into()],
+            ],
+            vec![
+                vec![
+                    "cmd".into(),
+                    "window".into(),
+                    "fixed-to-user-rotation".into(),
+                    "default".into(),
+                ],
+                vec![
+                    "cmd".into(),
+                    "window".into(),
+                    "user-rotation".into(),
+                    "free".into(),
+                ],
+            ],
             vec![vec![
                 "settings".into(),
                 "put".into(),
@@ -1620,19 +1759,67 @@ fn rotation_command_sequences(mode: DeviceRotationMode) -> Vec<Vec<Vec<String>>>
         DeviceRotationMode::Locked(rotation) => {
             let value = rotation.wm_value().to_string();
             vec![
-                vec![vec![
-                    "wm".into(),
-                    "user-rotation".into(),
-                    "lock".into(),
-                    value.clone(),
-                ]],
-                vec![vec![
-                    "cmd".into(),
-                    "window".into(),
-                    "user-rotation".into(),
-                    "lock".into(),
-                    value.clone(),
-                ]],
+                vec![
+                    vec![
+                        "wm".into(),
+                        "fixed-to-user-rotation".into(),
+                        "enabled".into(),
+                    ],
+                    vec![
+                        "wm".into(),
+                        "user-rotation".into(),
+                        "lock".into(),
+                        value.clone(),
+                    ],
+                ],
+                vec![
+                    vec![
+                        "cmd".into(),
+                        "window".into(),
+                        "fixed-to-user-rotation".into(),
+                        "enabled".into(),
+                    ],
+                    vec![
+                        "cmd".into(),
+                        "window".into(),
+                        "user-rotation".into(),
+                        "lock".into(),
+                        value.clone(),
+                    ],
+                ],
+                vec![
+                    vec![
+                        "wm".into(),
+                        "set-ignore-orientation-request".into(),
+                        "false".into(),
+                    ],
+                    vec![
+                        "wm".into(),
+                        "fixed-to-user-rotation".into(),
+                        "enabled".into(),
+                    ],
+                    vec![
+                        "wm".into(),
+                        "user-rotation".into(),
+                        "lock".into(),
+                        value.clone(),
+                    ],
+                ],
+                vec![
+                    vec![
+                        "wm".into(),
+                        "user-rotation".into(),
+                        "lock".into(),
+                        value.clone(),
+                    ],
+                    vec![
+                        "settings".into(),
+                        "put".into(),
+                        "system".into(),
+                        "accelerometer_rotation".into(),
+                        "0".into(),
+                    ],
+                ],
                 vec![
                     vec![
                         "settings".into(),
@@ -1677,6 +1864,17 @@ fn format_shell_sequence(sequence: &[Vec<String>]) -> String {
 fn parse_wxh(text: &str) -> Option<(u32, u32)> {
     let (width, height) = text.trim().split_once('x')?;
     Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+}
+
+fn parse_rotation_number(text: &str) -> Option<u8> {
+    match text.trim().parse::<u16>().ok()? {
+        0 => Some(0),
+        90 => Some(1),
+        180 => Some(2),
+        270 => Some(3),
+        value @ 0..=3 => u8::try_from(value).ok(),
+        _ => None,
+    }
 }
 
 fn resolve_stream_config_or_fallback(
@@ -2162,6 +2360,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_rotation_number_handles_android_rotation_formats() {
+        assert_eq!(parse_rotation_number("0"), Some(0));
+        assert_eq!(parse_rotation_number("90"), Some(1));
+        assert_eq!(parse_rotation_number("180"), Some(2));
+        assert_eq!(parse_rotation_number("270"), Some(3));
+    }
+
+    #[test]
+    fn parse_display_state_reads_current_size_rotation_and_mode() {
+        let text = r#"
+            init=1080x2340 450dpi cur=2340x1080 app=2340x1080
+            mCurrentRotation=ROTATION_270
+            mUserRotationMode=USER_ROTATION_LOCKED mUserRotation=ROTATION_270
+        "#;
+        let state = parse_display_state(text).expect("display state");
+        assert_eq!((state.width, state.height), (2340, 1080));
+        assert_eq!(state.rotation, DeviceRotation::LandscapeRight);
+        assert_eq!(
+            state.mode,
+            DeviceRotationMode::Locked(DeviceRotation::LandscapeRight)
+        );
+    }
+
+    #[test]
+    fn parse_display_state_defaults_to_auto_when_not_locked() {
+        let text = r#"
+            init=1080x2340 450dpi cur=1080x2340 app=1080x2340
+            mCurrentRotation=ROTATION_0
+            mUserRotationMode=USER_ROTATION_FREE mUserRotation=ROTATION_0
+        "#;
+        let state = parse_display_state(text).expect("display state");
+        assert_eq!(state.mode, DeviceRotationMode::Auto);
+    }
+
+    #[test]
     fn frame_buffer_put_take() {
         let buf = MirrorFrameBuffer::new();
         assert!(buf.take().is_none());
@@ -2235,42 +2468,42 @@ mod tests {
     }
 
     #[test]
-    fn auto_rotation_fallback_sequence_enables_sensor_rotation() {
+    fn auto_rotation_sequences_restore_fixed_to_user_rotation() {
         let commands = rotation_command_sequences(DeviceRotationMode::Auto);
-        assert_eq!(commands.len(), 3);
         assert_eq!(
-            commands[2],
-            vec![vec![
-                "settings".to_string(),
-                "put".to_string(),
-                "system".to_string(),
-                "accelerometer_rotation".to_string(),
-                "1".to_string(),
-            ]]
+            commands[0],
+            vec![
+                vec![
+                    "wm".to_string(),
+                    "fixed-to-user-rotation".to_string(),
+                    "default".to_string(),
+                ],
+                vec![
+                    "wm".to_string(),
+                    "user-rotation".to_string(),
+                    "free".to_string(),
+                ],
+            ]
         );
     }
 
     #[test]
-    fn locked_rotation_fallback_sequence_locks_requested_value() {
+    fn locked_rotation_sequences_enable_fixed_to_user_rotation() {
         let commands =
             rotation_command_sequences(DeviceRotationMode::Locked(DeviceRotation::LandscapeRight));
-        assert_eq!(commands.len(), 3);
         assert_eq!(
-            commands[2],
+            commands[0],
             vec![
                 vec![
-                    "settings".to_string(),
-                    "put".to_string(),
-                    "system".to_string(),
-                    "user_rotation".to_string(),
-                    "3".to_string(),
+                    "wm".to_string(),
+                    "fixed-to-user-rotation".to_string(),
+                    "enabled".to_string(),
                 ],
                 vec![
-                    "settings".to_string(),
-                    "put".to_string(),
-                    "system".to_string(),
-                    "accelerometer_rotation".to_string(),
-                    "0".to_string(),
+                    "wm".to_string(),
+                    "user-rotation".to_string(),
+                    "lock".to_string(),
+                    "3".to_string(),
                 ],
             ]
         );

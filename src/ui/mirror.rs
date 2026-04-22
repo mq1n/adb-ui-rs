@@ -4,6 +4,8 @@ use std::time::Duration;
 use eframe::egui;
 
 use crate::adb;
+#[cfg(test)]
+use crate::adb::mirror::MirrorFrame;
 use crate::adb::mirror::{DeviceRotation, DeviceRotationMode, MirrorMode};
 use crate::device::DeviceState;
 
@@ -59,7 +61,7 @@ impl super::App {
             }
 
             ui.separator();
-            self.draw_mirror_rotation_menu(ui, serial_owned);
+            self.draw_mirror_rotation_menu(ui, serial, serial_owned);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(ds) = self.devices.get(serial) {
@@ -73,9 +75,16 @@ impl super::App {
         });
     }
 
-    fn draw_mirror_rotation_menu(&mut self, ui: &mut egui::Ui, serial_owned: &str) {
-        ui.menu_button("Rotate", |ui| {
-            if ui.button(DeviceRotationMode::Auto.label()).clicked() {
+    fn draw_mirror_rotation_menu(&mut self, ui: &mut egui::Ui, serial: &str, serial_owned: &str) {
+        let current_mode = self
+            .devices
+            .get(serial)
+            .map_or(DeviceRotationMode::Auto, |ds| ds.mirror_rotation_mode);
+        ui.menu_button(format!("Rotate: {}", current_mode.label()), |ui| {
+            if ui
+                .selectable_label(current_mode == DeviceRotationMode::Auto, "Auto Rotate")
+                .clicked()
+            {
                 self.spawn_mirror_rotation(serial_owned, DeviceRotationMode::Auto);
                 ui.close();
             }
@@ -84,7 +93,10 @@ impl super::App {
 
             for rotation in DeviceRotation::ALL {
                 let mode = DeviceRotationMode::Locked(rotation);
-                if ui.button(mode.label()).clicked() {
+                if ui
+                    .selectable_label(current_mode == mode, mode.label())
+                    .clicked()
+                {
                     self.spawn_mirror_rotation(serial_owned, mode);
                     ui.close();
                 }
@@ -92,7 +104,7 @@ impl super::App {
 
             ui.separator();
             ui.label(
-                egui::RichText::new("Restarts live mirroring after the rotation change.")
+                egui::RichText::new("Applies device rotation and restarts live mirroring.")
                     .small()
                     .color(egui::Color32::from_rgb(160, 160, 160)),
             );
@@ -634,10 +646,9 @@ impl super::App {
 
         let tx = self.tx.clone();
         let serial = serial.to_string();
-        let label = mode.label().to_string();
         std::thread::spawn(move || {
             let result = adb::mirror::apply_device_rotation(&serial, mode);
-            let _ = tx.send(adb::AdbMsg::MirrorRotationResult(serial, label, result));
+            let _ = tx.send(adb::AdbMsg::MirrorRotationResult(serial, mode, result));
         });
     }
 
@@ -720,6 +731,99 @@ fn map_to_device(pos: egui::Pos2, display_rect: egui::Rect, dev_w: u32, dev_h: u
     )
 }
 
+#[cfg(test)]
+fn mirror_view_rotation_label(rotation: u8) -> &'static str {
+    match rotation % 4 {
+        1 => "Landscape Right (90°)",
+        2 => "Upside Down (180°)",
+        3 => "Landscape Left (270°)",
+        _ => "Portrait (0°)",
+    }
+}
+
+#[cfg(test)]
+fn rotate_mirror_frame(frame: MirrorFrame, rotation: u8) -> MirrorFrame {
+    match rotation % 4 {
+        1 => rotate_rgba_frame_90_cw(frame),
+        2 => rotate_rgba_frame_180(frame),
+        3 => rotate_rgba_frame_90_ccw(frame),
+        _ => frame,
+    }
+}
+
+#[cfg(test)]
+fn rotate_rgba_frame_90_cw(frame: MirrorFrame) -> MirrorFrame {
+    let src_w = frame.width;
+    let src_h = frame.height;
+    let dst_w = src_h;
+    let dst_h = src_w;
+    let mut rgba = vec![0; frame.rgba.len()];
+
+    for y in 0..src_h {
+        for x in 0..src_w {
+            let src_idx = (y * src_w + x) * 4;
+            let dst_x = src_h - 1 - y;
+            let dst_y = x;
+            let dst_idx = (dst_y * dst_w + dst_x) * 4;
+            rgba[dst_idx..dst_idx + 4].copy_from_slice(&frame.rgba[src_idx..src_idx + 4]);
+        }
+    }
+
+    MirrorFrame {
+        width: dst_w,
+        height: dst_h,
+        rgba,
+    }
+}
+
+#[cfg(test)]
+fn rotate_rgba_frame_90_ccw(frame: MirrorFrame) -> MirrorFrame {
+    let src_w = frame.width;
+    let src_h = frame.height;
+    let dst_w = src_h;
+    let dst_h = src_w;
+    let mut rgba = vec![0; frame.rgba.len()];
+
+    for y in 0..src_h {
+        for x in 0..src_w {
+            let src_idx = (y * src_w + x) * 4;
+            let dst_x = y;
+            let dst_y = src_w - 1 - x;
+            let dst_idx = (dst_y * dst_w + dst_x) * 4;
+            rgba[dst_idx..dst_idx + 4].copy_from_slice(&frame.rgba[src_idx..src_idx + 4]);
+        }
+    }
+
+    MirrorFrame {
+        width: dst_w,
+        height: dst_h,
+        rgba,
+    }
+}
+
+#[cfg(test)]
+fn rotate_rgba_frame_180(frame: MirrorFrame) -> MirrorFrame {
+    let src_w = frame.width;
+    let src_h = frame.height;
+    let mut rgba = vec![0; frame.rgba.len()];
+
+    for y in 0..src_h {
+        for x in 0..src_w {
+            let src_idx = (y * src_w + x) * 4;
+            let dst_x = src_w - 1 - x;
+            let dst_y = src_h - 1 - y;
+            let dst_idx = (dst_y * src_w + dst_x) * 4;
+            rgba[dst_idx..dst_idx + 4].copy_from_slice(&frame.rgba[src_idx..src_idx + 4]);
+        }
+    }
+
+    MirrorFrame {
+        width: src_w,
+        height: src_h,
+        rgba,
+    }
+}
+
 fn fitted_image_rect(area: egui::Rect, texture_size: egui::Vec2) -> egui::Rect {
     let scale = (area.width() / texture_size.x)
         .min(area.height() / texture_size.y)
@@ -797,5 +901,65 @@ const fn status_label(val: Option<bool>) -> &'static str {
         Some(true) => "Yes",
         Some(false) => "No",
         None => "?",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mirror_view_rotation_label_matches_expected_names() {
+        assert!(mirror_view_rotation_label(0).starts_with("Portrait"));
+        assert!(mirror_view_rotation_label(1).starts_with("Landscape Right"));
+        assert!(mirror_view_rotation_label(2).starts_with("Upside Down"));
+        assert!(mirror_view_rotation_label(3).starts_with("Landscape Left"));
+    }
+
+    #[test]
+    fn rotate_mirror_frame_swaps_dimensions_for_quarter_turn() {
+        let frame = MirrorFrame {
+            width: 2,
+            height: 3,
+            rgba: vec![0; 2 * 3 * 4],
+        };
+        let rotated = rotate_mirror_frame(frame, 1);
+        assert_eq!((rotated.width, rotated.height), (3, 2));
+    }
+
+    #[test]
+    fn rotate_rgba_frame_180_preserves_dimensions() {
+        let frame = MirrorFrame {
+            width: 2,
+            height: 3,
+            rgba: vec![0; 2 * 3 * 4],
+        };
+        let rotated = rotate_rgba_frame_180(frame);
+        assert_eq!((rotated.width, rotated.height), (2, 3));
+    }
+
+    #[test]
+    fn rotate_rgba_frame_90_ccw_swaps_dimensions() {
+        let frame = MirrorFrame {
+            width: 2,
+            height: 3,
+            rgba: vec![0; 2 * 3 * 4],
+        };
+        let rotated = rotate_rgba_frame_90_ccw(frame);
+        assert_eq!((rotated.width, rotated.height), (3, 2));
+    }
+
+    #[test]
+    fn map_to_device_maps_top_left_to_origin() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0));
+        let (x, y) = map_to_device(egui::pos2(0.0, 0.0), rect, 1000, 2000);
+        assert_eq!((x, y), (0, 0));
+    }
+
+    #[test]
+    fn map_to_device_maps_bottom_right_to_last_pixel() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(200.0, 100.0));
+        let (x, y) = map_to_device(egui::pos2(200.0, 100.0), rect, 1000, 2000);
+        assert_eq!((x, y), (999, 1999));
     }
 }

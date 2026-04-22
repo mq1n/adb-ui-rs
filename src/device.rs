@@ -8,7 +8,8 @@ use std::sync::Arc;
 use eframe::egui;
 
 use crate::adb::mirror::{
-    MirrorConfig, MirrorControl, MirrorFrameBuffer, MirrorHandle, MirrorMode,
+    DeviceRotation, DeviceRotationMode, MirrorConfig, MirrorControl, MirrorFrameBuffer,
+    MirrorHandle, MirrorMode,
 };
 use crate::adb::{DeviceInfo, FileEntry, RemoteFileEntry};
 
@@ -291,6 +292,8 @@ pub struct MirrorUiState {
     /// Actual device display resolution (for input coordinate mapping).
     pub device_width: u32,
     pub device_height: u32,
+    /// Current display rotation reported by the device while mirroring.
+    pub current_rotation: Option<DeviceRotation>,
     /// Total decoded frames (for FPS calculation).
     pub frame_count: u64,
     /// Timestamp of last FPS sample.
@@ -314,6 +317,7 @@ impl Default for MirrorUiState {
             video_height: 0,
             device_width: 0,
             device_height: 0,
+            current_rotation: None,
             frame_count: 0,
             last_fps_time: 0.0,
             last_fps_count: 0,
@@ -638,6 +642,8 @@ pub struct DeviceState {
     pub mirror_control: Option<MirrorControl>,
     /// Current mirror session token used to discard stale worker messages.
     pub mirror_session: u64,
+    /// Requested device rotation mode for the mirror tab.
+    pub mirror_rotation_mode: DeviceRotationMode,
     /// Selected mirror mode (screenrecord or server).
     pub mirror_mode: MirrorMode,
     /// On-device server management state.
@@ -743,6 +749,7 @@ impl DeviceState {
             mirror_stop: None,
             mirror_control: None,
             mirror_session: 0,
+            mirror_rotation_mode: DeviceRotationMode::default(),
             mirror_mode: MirrorMode::default(),
             mirror_server: MirrorServerState::default(),
         }
