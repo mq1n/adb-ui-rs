@@ -334,6 +334,7 @@ impl App {
             let _ = proc.kill();
         }
         // Stop mirror.
+        self.restore_mirror_rotation_async(serial, "tab close");
         if let Some(ds) = self.devices.get_mut(serial) {
             ds.cancel_mirror_session("Stopped");
         }
@@ -920,6 +921,7 @@ impl App {
                     let was_active = self.devices.get(&serial).is_some_and(|ds| ds.mirror.active);
                     if was_active {
                         self.log_mirror_warn(&serial, format!("Stopped: {reason}"));
+                        self.restore_mirror_rotation_async(&serial, "mirror stop");
                     }
                     if let Some(ds) = self.devices.get_mut(&serial) {
                         // Full cleanup — matches stop_mirroring().
@@ -979,10 +981,13 @@ impl App {
                         self.start_mirroring(&serial);
                     }
                 }
-                AdbMsg::MirrorRotationResult(serial, mode, result) => match result {
+                AdbMsg::MirrorRotationResult(serial, mode, snapshot, result) => match result {
                     Ok(()) => {
                         if let Some(ds) = self.devices.get_mut(&serial) {
                             ds.mirror_rotation_mode = mode;
+                            if let Some(snapshot) = snapshot {
+                                ds.mirror_rotation_snapshot = Some(snapshot);
+                            }
                         }
                         self.log_mirror_info(&serial, format!("Rotation set to {}", mode.label()));
                     }
@@ -1102,8 +1107,9 @@ impl App {
             self.log(AppLogLevel::Warn, format!("Device disconnected: {serial}"));
         }
 
-        for (serial, ds) in &mut self.devices {
-            if !new_serials.contains(serial) {
+        for serial in &disconnected {
+            self.restore_mirror_rotation_async(serial, "device disconnect");
+            if let Some(ds) = self.devices.get_mut(serial) {
                 ds.stop_watcher();
                 ds.stop_all_log_watchers();
                 ds.stop_explorer_follow();
@@ -1197,14 +1203,18 @@ impl App {
     }
 
     fn shutdown(&mut self) {
-        for device in self.devices.values_mut() {
-            device.stop_watcher();
-            device.stop_all_log_watchers();
-            device.stop_explorer_follow();
-            device.cancel_mirror_session("Stopped");
-            device.screen_auto_interval = None;
-            device.screen.capturing = false;
-            device.screen.recording = false;
+        let serials: Vec<String> = self.devices.keys().cloned().collect();
+        for serial in &serials {
+            self.restore_mirror_rotation_blocking(serial, "shutdown");
+            if let Some(device) = self.devices.get_mut(serial) {
+                device.stop_watcher();
+                device.stop_all_log_watchers();
+                device.stop_explorer_follow();
+                device.cancel_mirror_session("Stopped");
+                device.screen_auto_interval = None;
+                device.screen.capturing = false;
+                device.screen.recording = false;
+            }
         }
 
         for (_, mut child) in self.logcat_procs.drain() {

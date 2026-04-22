@@ -122,6 +122,32 @@ impl DeviceRotationMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedToUserRotationMode {
+    Default,
+    Enabled,
+    Disabled,
+    EnabledIfNoAutoRotation,
+}
+
+impl FixedToUserRotationMode {
+    const fn wm_value(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+            Self::EnabledIfNoAutoRotation => "enabled_if_no_auto_rotation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceRotationSnapshot {
+    pub mode: DeviceRotationMode,
+    pub fixed_to_user_rotation: FixedToUserRotationMode,
+    pub ignore_orientation_request: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DisplayState {
     width: u32,
     height: u32,
@@ -1701,8 +1727,34 @@ fn parse_display_state(text: &str) -> Result<DisplayState, String> {
     })
 }
 
+pub fn get_device_rotation_snapshot(serial: &str) -> Result<DeviceRotationSnapshot, String> {
+    let state = get_display_state(serial)?;
+    Ok(DeviceRotationSnapshot {
+        mode: state.mode,
+        fixed_to_user_rotation: query_fixed_to_user_rotation(serial)?,
+        ignore_orientation_request: query_ignore_orientation_request(serial)?,
+    })
+}
+
 pub fn apply_device_rotation(serial: &str, mode: DeviceRotationMode) -> Result<(), String> {
     let command_sequences = rotation_command_sequences(mode);
+    let mut errors = Vec::new();
+
+    for sequence in command_sequences {
+        match run_shell_sequence(serial, &sequence) {
+            Ok(()) => return Ok(()),
+            Err(error) => errors.push(format!("{}: {error}", format_shell_sequence(&sequence))),
+        }
+    }
+
+    Err(errors.join("; "))
+}
+
+pub fn restore_device_rotation(
+    serial: &str,
+    snapshot: DeviceRotationSnapshot,
+) -> Result<(), String> {
+    let command_sequences = restore_rotation_command_sequences(snapshot);
     let mut errors = Vec::new();
 
     for sequence in command_sequences {
@@ -1841,6 +1893,120 @@ fn rotation_command_sequences(mode: DeviceRotationMode) -> Vec<Vec<Vec<String>>>
     }
 }
 
+fn restore_rotation_command_sequences(snapshot: DeviceRotationSnapshot) -> Vec<Vec<Vec<String>>> {
+    let ignore_value = if snapshot.ignore_orientation_request {
+        "true"
+    } else {
+        "false"
+    };
+    let fixed_value = snapshot.fixed_to_user_rotation.wm_value().to_string();
+
+    match snapshot.mode {
+        DeviceRotationMode::Auto => vec![
+            vec![
+                vec![
+                    "wm".into(),
+                    "set-ignore-orientation-request".into(),
+                    ignore_value.into(),
+                ],
+                vec![
+                    "wm".into(),
+                    "fixed-to-user-rotation".into(),
+                    fixed_value.clone(),
+                ],
+                vec!["wm".into(), "user-rotation".into(), "free".into()],
+            ],
+            vec![
+                vec![
+                    "cmd".into(),
+                    "window".into(),
+                    "set-ignore-orientation-request".into(),
+                    ignore_value.into(),
+                ],
+                vec![
+                    "cmd".into(),
+                    "window".into(),
+                    "fixed-to-user-rotation".into(),
+                    fixed_value,
+                ],
+                vec![
+                    "cmd".into(),
+                    "window".into(),
+                    "user-rotation".into(),
+                    "free".into(),
+                ],
+            ],
+            vec![vec![
+                "settings".into(),
+                "put".into(),
+                "system".into(),
+                "accelerometer_rotation".into(),
+                "1".into(),
+            ]],
+        ],
+        DeviceRotationMode::Locked(rotation) => {
+            let rotation_value = rotation.wm_value().to_string();
+            vec![
+                vec![
+                    vec![
+                        "wm".into(),
+                        "set-ignore-orientation-request".into(),
+                        ignore_value.into(),
+                    ],
+                    vec![
+                        "wm".into(),
+                        "fixed-to-user-rotation".into(),
+                        fixed_value.clone(),
+                    ],
+                    vec![
+                        "wm".into(),
+                        "user-rotation".into(),
+                        "lock".into(),
+                        rotation_value.clone(),
+                    ],
+                ],
+                vec![
+                    vec![
+                        "cmd".into(),
+                        "window".into(),
+                        "set-ignore-orientation-request".into(),
+                        ignore_value.into(),
+                    ],
+                    vec![
+                        "cmd".into(),
+                        "window".into(),
+                        "fixed-to-user-rotation".into(),
+                        fixed_value,
+                    ],
+                    vec![
+                        "cmd".into(),
+                        "window".into(),
+                        "user-rotation".into(),
+                        "lock".into(),
+                        rotation_value.clone(),
+                    ],
+                ],
+                vec![
+                    vec![
+                        "settings".into(),
+                        "put".into(),
+                        "system".into(),
+                        "user_rotation".into(),
+                        rotation_value,
+                    ],
+                    vec![
+                        "settings".into(),
+                        "put".into(),
+                        "system".into(),
+                        "accelerometer_rotation".into(),
+                        "0".into(),
+                    ],
+                ],
+            ]
+        }
+    }
+}
+
 fn run_shell_sequence(serial: &str, sequence: &[Vec<String>]) -> Result<(), String> {
     for command in sequence {
         let args: Vec<&str> = command.iter().map(String::as_str).collect();
@@ -1861,9 +2027,53 @@ fn format_shell_sequence(sequence: &[Vec<String>]) -> String {
         .join(" && ")
 }
 
+fn query_fixed_to_user_rotation(serial: &str) -> Result<FixedToUserRotationMode, String> {
+    let output = adb_shell_output(serial, &["wm", "fixed-to-user-rotation"])?;
+    if !output.status.success() {
+        return Err(describe_process_output(&output));
+    }
+
+    parse_fixed_to_user_rotation_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn query_ignore_orientation_request(serial: &str) -> Result<bool, String> {
+    let output = adb_shell_output(serial, &["wm", "get-ignore-orientation-request"])?;
+    if !output.status.success() {
+        return Err(describe_process_output(&output));
+    }
+
+    parse_ignore_orientation_request_output(&String::from_utf8_lossy(&output.stdout))
+}
+
 fn parse_wxh(text: &str) -> Option<(u32, u32)> {
     let (width, height) = text.trim().split_once('x')?;
     Some((width.trim().parse().ok()?, height.trim().parse().ok()?))
+}
+
+fn parse_fixed_to_user_rotation_output(text: &str) -> Result<FixedToUserRotationMode, String> {
+    let trimmed = text.trim();
+    match trimmed {
+        "default" => Ok(FixedToUserRotationMode::Default),
+        "enabled" => Ok(FixedToUserRotationMode::Enabled),
+        "disabled" => Ok(FixedToUserRotationMode::Disabled),
+        "enabled_if_no_auto_rotation" => Ok(FixedToUserRotationMode::EnabledIfNoAutoRotation),
+        _ => Err(format!(
+            "Unexpected fixed-to-user-rotation output: {trimmed}"
+        )),
+    }
+}
+
+fn parse_ignore_orientation_request_output(text: &str) -> Result<bool, String> {
+    let trimmed = text.trim();
+    if trimmed.contains("true") {
+        Ok(true)
+    } else if trimmed.contains("false") {
+        Ok(false)
+    } else {
+        Err(format!(
+            "Unexpected ignore-orientation-request output: {trimmed}"
+        ))
+    }
 }
 
 fn parse_rotation_number(text: &str) -> Option<u8> {
@@ -2368,6 +2578,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_fixed_to_user_rotation_output_recognizes_default() {
+        assert_eq!(
+            parse_fixed_to_user_rotation_output("default"),
+            Ok(FixedToUserRotationMode::Default)
+        );
+    }
+
+    #[test]
+    fn parse_ignore_orientation_request_output_recognizes_false() {
+        assert_eq!(
+            parse_ignore_orientation_request_output(
+                "ignoreOrientationRequest false for displayId=0"
+            ),
+            Ok(false)
+        );
+    }
+
+    #[test]
     fn parse_display_state_reads_current_size_rotation_and_mode() {
         let text = r#"
             init=1080x2340 450dpi cur=2340x1080 app=2340x1080
@@ -2504,6 +2732,36 @@ mod tests {
                     "user-rotation".to_string(),
                     "lock".to_string(),
                     "3".to_string(),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_auto_rotation_sequences_restore_fixed_and_ignore_state() {
+        let snapshot = DeviceRotationSnapshot {
+            mode: DeviceRotationMode::Auto,
+            fixed_to_user_rotation: FixedToUserRotationMode::Default,
+            ignore_orientation_request: false,
+        };
+        let commands = restore_rotation_command_sequences(&snapshot);
+        assert_eq!(
+            commands[0],
+            vec![
+                vec![
+                    "wm".to_string(),
+                    "set-ignore-orientation-request".to_string(),
+                    "false".to_string(),
+                ],
+                vec![
+                    "wm".to_string(),
+                    "fixed-to-user-rotation".to_string(),
+                    "default".to_string(),
+                ],
+                vec![
+                    "wm".to_string(),
+                    "user-rotation".to_string(),
+                    "free".to_string(),
                 ],
             ]
         );

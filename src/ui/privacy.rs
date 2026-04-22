@@ -82,8 +82,7 @@ impl App {
             let model = self
                 .streamer_device_models
                 .get(serial)
-                .map(String::as_str)
-                .unwrap_or("unknown");
+                .map_or("unknown", String::as_str);
             replacements.push((raw_device_label(model, serial), alias.clone()));
             replacements.push((serial.clone(), alias.clone()));
             if model != "unknown" {
@@ -162,7 +161,7 @@ fn list_process_names() -> Result<Vec<String>, String> {
             return Err("tasklist exited unsuccessfully".to_string());
         }
 
-        return Ok(parse_tasklist_csv(&String::from_utf8_lossy(&output.stdout)));
+        Ok(parse_tasklist_csv(&String::from_utf8_lossy(&output.stdout)))
     }
 
     #[cfg(not(windows))]
@@ -188,6 +187,7 @@ fn list_process_names() -> Result<Vec<String>, String> {
     }
 }
 
+#[cfg(windows)]
 fn parse_tasklist_csv(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|line| line.split(',').next())
@@ -360,6 +360,7 @@ fn is_numeric_port(port: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     #[test]
     fn tasklist_parser_reads_process_names() {
         let names = parse_tasklist_csv(

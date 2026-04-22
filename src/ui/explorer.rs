@@ -582,7 +582,7 @@ impl super::App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(device) = self.devices.get(serial) {
                     ui.label(
-                        egui::RichText::new(self.display_text(&device.explorer_visible_path()))
+                        egui::RichText::new(self.display_text(device.explorer_visible_path()))
                             .small()
                             .monospace()
                             .color(egui::Color32::from_rgb(140, 140, 140)),

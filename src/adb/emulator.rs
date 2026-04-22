@@ -34,13 +34,9 @@ fn emulator_path() -> Option<PathBuf> {
     }
 
     // Homebrew on macOS installs emulator directly into its bin directory.
-    for candidate in homebrew_tool_candidates("emulator") {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    homebrew_tool_candidates("emulator")
+        .into_iter()
+        .find(|candidate| candidate.exists())
 }
 
 /// List available AVDs.
@@ -91,11 +87,11 @@ fn list_avds_from_directory() -> Vec<String> {
     };
 
     entries
-        .filter_map(|e| e.ok())
+        .filter_map(Result::ok)
         .filter_map(|e| {
             let name = e.file_name();
             let name = name.to_string_lossy();
-            name.strip_suffix(".ini").map(|n| n.to_string())
+            name.strip_suffix(".ini").map(ToString::to_string)
         })
         .collect()
 }
@@ -241,13 +237,9 @@ fn avdmanager_path() -> Option<PathBuf> {
     }
 
     // Homebrew on macOS.
-    for candidate in homebrew_tool_candidates("avdmanager") {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    homebrew_tool_candidates("avdmanager")
+        .into_iter()
+        .find(|candidate| candidate.exists())
 }
 
 /// List available system images for AVD creation.

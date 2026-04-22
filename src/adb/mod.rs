@@ -142,7 +142,7 @@ const fn adb_binary_name() -> &'static str {
     }
 }
 
-pub(super) fn command_available(program: impl AsRef<std::ffi::OsStr>, version_arg: &str) -> bool {
+pub fn command_available(program: impl AsRef<std::ffi::OsStr>, version_arg: &str) -> bool {
     Command::new(program)
         .arg(version_arg)
         .stdout(Stdio::null())
@@ -213,24 +213,22 @@ pub fn sdk_root_candidates() -> Vec<PathBuf> {
     roots
 }
 
-fn homebrew_adb_candidates() -> Vec<PathBuf> {
+const fn homebrew_adb_candidates() -> Vec<PathBuf> {
     homebrew_tool_candidates("adb")
 }
 
 /// Homebrew candidates for any Android SDK tool on macOS.
-pub(super) fn homebrew_tool_candidates(tool: &str) -> Vec<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        vec![
-            PathBuf::from(format!("/opt/homebrew/bin/{tool}")),
-            PathBuf::from(format!("/usr/local/bin/{tool}")),
-        ]
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = tool;
-        Vec::new()
-    }
+#[cfg(target_os = "macos")]
+pub fn homebrew_tool_candidates(tool: &str) -> Vec<PathBuf> {
+    vec![
+        PathBuf::from(format!("/opt/homebrew/bin/{tool}")),
+        PathBuf::from(format!("/usr/local/bin/{tool}")),
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+pub const fn homebrew_tool_candidates(_tool: &str) -> Vec<PathBuf> {
+    Vec::new()
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, candidate: PathBuf) {
@@ -361,8 +359,13 @@ pub enum AdbMsg {
         mirror::DeviceRotation,
         mirror::DeviceRotationMode,
     ),
-    /// Mirror device rotation change result: (serial, mode, `Ok(())` or `Err(msg)`).
-    MirrorRotationResult(String, mirror::DeviceRotationMode, Result<(), String>),
+    /// Mirror device rotation change result: (serial, mode, captured original state, `Ok(())` or `Err(msg)`).
+    MirrorRotationResult(
+        String,
+        mirror::DeviceRotationMode,
+        Option<mirror::DeviceRotationSnapshot>,
+        Result<(), String>,
+    ),
     /// Mirror server management result: (serial, installed, running, message).
     MirrorServerStatus(String, Option<bool>, Option<bool>, String),
     /// Mirror backend log line: (serial, level, message).

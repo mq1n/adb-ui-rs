@@ -8,8 +8,8 @@ use std::sync::Arc;
 use eframe::egui;
 
 use crate::adb::mirror::{
-    DeviceRotation, DeviceRotationMode, MirrorConfig, MirrorControl, MirrorFrameBuffer,
-    MirrorHandle, MirrorMode,
+    DeviceRotation, DeviceRotationMode, DeviceRotationSnapshot, MirrorConfig, MirrorControl,
+    MirrorFrameBuffer, MirrorHandle, MirrorMode,
 };
 use crate::adb::{DeviceInfo, FileEntry, RemoteFileEntry};
 
@@ -644,6 +644,8 @@ pub struct DeviceState {
     pub mirror_session: u64,
     /// Requested device rotation mode for the mirror tab.
     pub mirror_rotation_mode: DeviceRotationMode,
+    /// Original device rotation state captured before mirror-driven changes.
+    pub mirror_rotation_snapshot: Option<DeviceRotationSnapshot>,
     /// Selected mirror mode (screenrecord or server).
     pub mirror_mode: MirrorMode,
     /// On-device server management state.
@@ -750,6 +752,7 @@ impl DeviceState {
             mirror_control: None,
             mirror_session: 0,
             mirror_rotation_mode: DeviceRotationMode::default(),
+            mirror_rotation_snapshot: None,
             mirror_mode: MirrorMode::default(),
             mirror_server: MirrorServerState::default(),
         }

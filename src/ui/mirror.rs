@@ -635,6 +635,7 @@ impl super::App {
     }
 
     pub(super) fn stop_mirroring(&mut self, serial: &str) {
+        self.restore_mirror_rotation_async(serial, "stop");
         if let Some(ds) = self.devices.get_mut(serial) {
             ds.cancel_mirror_session("Stopped");
         }
@@ -642,14 +643,115 @@ impl super::App {
     }
 
     fn spawn_mirror_rotation(&mut self, serial: &str, mode: DeviceRotationMode) {
+        let should_capture_snapshot = self.devices.get(serial).is_some_and(|ds| {
+            ds.mirror_rotation_snapshot.is_none() && mode != DeviceRotationMode::Auto
+        });
         self.log_mirror_info(serial, format!("Applying rotation: {}", mode.label()));
 
         let tx = self.tx.clone();
         let serial = serial.to_string();
         std::thread::spawn(move || {
+            let snapshot = if should_capture_snapshot {
+                match adb::mirror::get_device_rotation_snapshot(&serial) {
+                    Ok(snapshot) => Some(snapshot),
+                    Err(error) => {
+                        let _ = tx.send(adb::AdbMsg::MirrorRotationResult(
+                            serial,
+                            mode,
+                            None,
+                            Err(format!(
+                                "Failed to snapshot original rotation state: {error}"
+                            )),
+                        ));
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
             let result = adb::mirror::apply_device_rotation(&serial, mode);
-            let _ = tx.send(adb::AdbMsg::MirrorRotationResult(serial, mode, result));
+            let _ = tx.send(adb::AdbMsg::MirrorRotationResult(
+                serial, mode, snapshot, result,
+            ));
         });
+    }
+
+    pub(super) fn restore_mirror_rotation_async(&mut self, serial: &str, reason: &str) {
+        let Some(snapshot) = self
+            .devices
+            .get_mut(serial)
+            .and_then(|ds| ds.mirror_rotation_snapshot.take())
+        else {
+            return;
+        };
+
+        self.log_mirror_info(
+            serial,
+            format!(
+                "Restoring device rotation after {reason} to {}",
+                snapshot.mode.label()
+            ),
+        );
+
+        let tx = self.tx.clone();
+        let serial = serial.to_string();
+        std::thread::spawn(
+            move || match adb::mirror::restore_device_rotation(&serial, snapshot) {
+                Ok(()) => {
+                    let _ = tx.send(adb::AdbMsg::MirrorLog(
+                        serial,
+                        adb::AdbLogLevel::Info,
+                        format!("Device rotation restored to {}", snapshot.mode.label()),
+                    ));
+                }
+                Err(error) => {
+                    let _ = tx.send(adb::AdbMsg::MirrorLog(
+                        serial,
+                        adb::AdbLogLevel::Warn,
+                        format!(
+                            "Failed to restore device rotation to {}: {error}",
+                            snapshot.mode.label()
+                        ),
+                    ));
+                }
+            },
+        );
+    }
+
+    pub(super) fn restore_mirror_rotation_blocking(&mut self, serial: &str, reason: &str) {
+        let Some(snapshot) = self
+            .devices
+            .get_mut(serial)
+            .and_then(|ds| ds.mirror_rotation_snapshot.take())
+        else {
+            return;
+        };
+
+        self.log_mirror_info(
+            serial,
+            format!(
+                "Restoring device rotation after {reason} to {}",
+                snapshot.mode.label()
+            ),
+        );
+
+        match adb::mirror::restore_device_rotation(serial, snapshot) {
+            Ok(()) => {
+                self.log_mirror_info(
+                    serial,
+                    format!("Device rotation restored to {}", snapshot.mode.label()),
+                );
+            }
+            Err(error) => {
+                self.log_mirror_warn(
+                    serial,
+                    format!(
+                        "Failed to restore device rotation to {}: {error}",
+                        snapshot.mode.label()
+                    ),
+                );
+            }
+        }
     }
 
     const fn resolve_mirror_mode(serial: &str) -> MirrorMode {
